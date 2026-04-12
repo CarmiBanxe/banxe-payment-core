@@ -1,0 +1,40 @@
+rules:
+  - id: banxe-float-money
+    patterns:
+      - pattern: float($X)
+    message: "I-05: monetary amounts must be int (minor units), never float. Use int()."
+    languages: [python]
+    severity: ERROR
+    paths:
+      include: ["src/"]
+
+  - id: banxe-no-raw-pan
+    patterns:
+      - pattern: |
+          "$PAN"
+      - metavariable-regex:
+          metavariable: $PAN
+          regex: "^[0-9]{13,19}$"
+    message: "Never store or log raw PAN. Use masked_pan (last 4 only) or card_token."
+    languages: [python]
+    severity: ERROR
+
+  - id: banxe-screening-first
+    pattern: |
+      async def authorize($...):
+          ...
+          await $SWITCH.authorize(...)
+          ...
+    message: "I-01: ComplianceScreening must be called before payment authorization."
+    languages: [python]
+    severity: WARNING
+    paths:
+      include: ["src/"]
+
+  - id: banxe-no-agpl
+    patterns:
+      - pattern: import jube
+      - pattern: from jube import $X
+    message: "I-15: AGPLv3 components (Jube) must not be used in banxe-payment-core."
+    languages: [python]
+    severity: ERROR

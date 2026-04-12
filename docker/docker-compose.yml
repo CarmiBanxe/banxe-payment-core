@@ -1,0 +1,84 @@
+version: "3.9"
+
+# Hyperswitch full stack — Sprint 9
+# Ports: App :8096, Control Center :8097, Card Vault :8098
+# Source: https://github.com/juspay/hyperswitch
+
+services:
+  hyperswitch-server:
+    image: juspaydotin/hyperswitch-router:latest
+    container_name: banxe-hyperswitch-app
+    ports:
+      - "8096:8080"
+    environment:
+      - ROUTER__SERVER__HOST=0.0.0.0
+      - ROUTER__SERVER__PORT=8080
+      - ROUTER__MASTER_DATABASE__HOST=hyperswitch-pg
+      - ROUTER__MASTER_DATABASE__DBNAME=hyperswitch_db
+      - ROUTER__MASTER_DATABASE__USERNAME=hyperswitch
+      - ROUTER__MASTER_DATABASE__PASSWORD=${HYPERSWITCH_DB_PASSWORD:-hyperswitch}
+      - ROUTER__SECRETS__ADMIN_API_KEY=${HYPERSWITCH_API_KEY:-test_admin_api_key}
+      - ROUTER__LOCKER__HOST=hyperswitch-vault
+      - ROUTER__LOCKER__PORT=8443
+    depends_on:
+      hyperswitch-pg:
+        condition: service_healthy
+      hyperswitch-vault:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks: [banxe-payment]
+
+  hyperswitch-control-center:
+    image: juspaydotin/hyperswitch-control-center:latest
+    container_name: banxe-hyperswitch-ui
+    ports:
+      - "8097:9000"
+    environment:
+      - apiBaseUrl=http://hyperswitch-server:8080
+      - sdkBaseUrl=http://hyperswitch-sdk:9090
+    depends_on:
+      - hyperswitch-server
+    networks: [banxe-payment]
+
+  hyperswitch-vault:
+    image: juspaydotin/hyperswitch-card-vault:latest
+    container_name: banxe-hyperswitch-vault
+    ports:
+      - "8098:8443"
+    environment:
+      - LOCKER__DATABASE__HOST=hyperswitch-pg
+      - LOCKER__DATABASE__DBNAME=hyperswitch_locker
+      - LOCKER__DATABASE__USERNAME=hyperswitch
+      - LOCKER__DATABASE__PASSWORD=${HYPERSWITCH_DB_PASSWORD:-hyperswitch}
+    depends_on:
+      hyperswitch-pg:
+        condition: service_healthy
+    networks: [banxe-payment]
+
+  hyperswitch-pg:
+    image: postgres:16-alpine
+    container_name: banxe-hyperswitch-pg
+    environment:
+      - POSTGRES_USER=hyperswitch
+      - POSTGRES_PASSWORD=${HYPERSWITCH_DB_PASSWORD:-hyperswitch}
+      - POSTGRES_DB=hyperswitch_db
+    volumes:
+      - hyperswitch-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hyperswitch"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [banxe-payment]
+
+networks:
+  banxe-payment:
+    name: banxe-payment
+    external: false
+
+volumes:
+  hyperswitch-pg-data:
