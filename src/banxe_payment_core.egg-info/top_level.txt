@@ -1,5 +1,0 @@
-adapters
-authorization
-compliance_bridge
-ports
-settlement
