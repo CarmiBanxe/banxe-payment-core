@@ -440,7 +440,7 @@ class TestPaymentologyAdapterHTTP:
         adapter = self._adapter()
         ts = adapter._now_iso()
         assert "T" in ts
-        assert len(ts) == 15  # YYYYMMDDThh:mm:ss
+        assert len(ts) == 17  # YYYYMMDDThh:mm:ss (17 chars)
 
 
 # ─── Webhook server ──────────────────────────────────────────────────────────────
