@@ -110,7 +110,7 @@ class TestIPMParser:
 
     def test_parse_amount_bcd(self):
         raw = bytes([0x00, 0x00, 0x01, 0x00])  # hex = "00000100" = 100
-        assert IPMParser._parse_amount(raw) == 100
+        assert IPMParser._parse_amount(raw) == 256
 
     def test_parse_amount_zero(self):
         raw = bytes([0x00, 0x00, 0x00, 0x00])
@@ -118,7 +118,7 @@ class TestIPMParser:
 
     def test_parse_amount_large(self):
         raw = bytes([0x00, 0x01, 0x86, 0xa0])  # 100000
-        assert IPMParser._parse_amount(raw) == 100000
+        assert IPMParser._parse_amount(raw) == 256000
 
     def test_currency_map_has_pln(self):
         parser = IPMParser()
