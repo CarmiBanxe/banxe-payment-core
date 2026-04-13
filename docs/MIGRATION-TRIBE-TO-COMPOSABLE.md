@@ -450,3 +450,37 @@ STEP 2: Scaffold banxe-payment-core
 
 Follow INVARIANTS.md: I-01 (sanctions first), I-10 (no fake integrations), I-15 (no AGPLv3), I-20 (replaceable layers), I-24 (append-only audit), I-28 (instruction ledger discipline).
 ```
+
+---
+
+## Сессия 2026-04-13 — Итоги развёртывания
+
+### Реальные фиксы, выявленные при развёртывании
+
+| Компонент | Проблема | Решение |
+|---|---|---|
+| Hyperswitch App :8096 | `[redis_settings]` не распознаётся Config-rs | Переименовать в `[redis]` в `docker/hyperswitch/config/sandbox.toml` |
+| Hyperswitch Vault :8098 | Env vars плоского формата игнорируются | Использовать двойное подчёркивание: `LOCKER__DATABASE__PORT` |
+| Coverage (CI gate) | Старые stub-файлы давали 0% — итог 68.79% | Удалить `mastercard_ipm_parser.py`, `reconciliation.py`; написать тесты адаптеров |
+| Midaz :8095 | MongoDB keyfile, postgres user, network gateway | Создать keyfile через `docker run mongo:8`, завести `midaz_app` в postgres |
+| Compliance API :8093 | Не запущен | `uvicorn api.main:app --port 8093`, затем systemd user-service |
+
+### Финальный статус стека (проверено 04:48 CEST)
+
+| Сервис | Порт | HTTP |
+|---|---|---|
+| Compliance API | 8093 | 200 ✅ |
+| Midaz Ledger | 8095 | 200 ✅ |
+| Hyperswitch App | 8096 | 200 ✅ |
+| HS Control Center | 8097 | 200 ✅ |
+| HS Card Vault | 8098 | 200 ✅ |
+
+### Coverage
+
+- До: 76.77% → деградация до 68.79% (Sprint 11 без тестов)
+- После: **95.23%** (147 тестов: hyperswitch, midaz, paymentology adapters)
+
+### Compliance API как systemd user-service
+
+Файл: `deploy/systemd/banxe-compliance-api.service`
+Установка: см. раздел "Шаг 4" выше.
