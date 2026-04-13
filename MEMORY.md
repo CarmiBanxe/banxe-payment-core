@@ -65,27 +65,43 @@
 
 ---
 
-## Hyperswitch Stack (GMKtec — RUNNING)
+## Full Service Stack (GMKtec — ALL RUNNING as of 2026-04-13)
 
-All 4 containers UP as of 2026-04-13:
-
-| Service | Container | Port | Status |
+| Service | Container / Process | Port | Status |
 |---|---|---|---|
-| App Server | `banxe-hyperswitch-app` | :8096 | ✅ Up |
-| Control Center | `banxe-hyperswitch-ui` | :8097 | ✅ Up |
-| Card Vault | `banxe-hyperswitch-vault` | :8098 | ✅ Up |
-| Postgres | `banxe-hyperswitch-pg` | internal | ✅ Healthy |
+| Compliance API | uvicorn (banxe-emi-stack) | :8093 | ✅ Up |
+| Midaz Ledger | `midaz-ledger` | :8095 | ✅ Up |
+| Hyperswitch App | `banxe-hyperswitch-app` | :8096 | ✅ Up |
+| Hyperswitch Control Center | `banxe-hyperswitch-ui` | :8097 | ✅ Up |
+| Hyperswitch Card Vault | `banxe-hyperswitch-vault` | :8098 | ✅ Up |
+| Hyperswitch Postgres | `banxe-hyperswitch-pg` | internal | ✅ Healthy |
+| Midaz MongoDB | `midaz-mongodb` | :5703 (internal) | ✅ Healthy |
+| Midaz RabbitMQ | `midaz-rabbitmq` | :3003/:3004 | ✅ Healthy |
 
-**Config:** `docker/docker-compose.yml` + `docker/config/sandbox.toml`  
-**Key fix:** `[redis_settings]` → `[redis]` in sandbox.toml (official juspay section name)  
-**Vault:** reads env vars only (not config file mount); needs `LOCKER__TENANT_SECRETS__PUBLIC__*`  
-**Redis:** `banxe-redis` on `docker_default` network; hyperswitch-server joins both networks
+### Start commands
 
 ```bash
-# Start stack:
+# Compliance API (:8093)
+cd /home/mmber/banxe-emi-stack
+source /opt/banxe/compliance/venv/bin/activate
+nohup uvicorn api.main:app --host 0.0.0.0 --port 8093 --workers 1 > /tmp/compliance-api.log 2>&1 &
+
+# Midaz (:8095)
+cd /home/mmber/vibe-coding
+docker compose -f docker-compose.midaz.yml up -d
+
+# Hyperswitch stack (:8096/:8097/:8098)
 cd /home/mmber/banxe-payment-core/docker
 docker compose up -d
 ```
+
+### Key fixes applied
+- Hyperswitch: `[redis_settings]` → `[redis]` in sandbox.toml (official juspay section name)
+- Hyperswitch Vault: reads env vars only; needs `LOCKER__TENANT_SECRETS__PUBLIC__*`
+- Midaz: host gateway IP was `172.22.0.1` → corrected to `172.20.0.1` (actual midaz-network gateway)
+- Midaz: MongoDB keyfile created via `docker run mongo:8` to get uid 999 ownership
+- Midaz: keyfile path updated from `/data/banxe/midaz/mongo/` → `/home/mmber/midaz-data/mongo/`
+- Postgres: `midaz_app` user + `midaz_onboarding` + `midaz_transaction` DBs created in banxe-postgres
 
 ---
 
