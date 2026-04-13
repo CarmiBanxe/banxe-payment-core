@@ -25,9 +25,9 @@
 | Paymentology Companion API | `src/paymentology/` | **Есть (Sprint 10, GMKtec merge)** | ✅ |
 | Docker compose (port docs) | `docker/docker-compose.yml` | Есть | ✅ |
 | MIGRATION-TRIBE-TO-COMPOSABLE.md | `docs/MIGRATION-TRIBE-TO-COMPOSABLE.md` | **ОТСУТСТВУЕТ** | ❌ |
-| Hyperswitch App Server | Docker :8096, Up | **Exited(101) — config error** | ❌ |
+| Hyperswitch App Server | Docker :8096, Up | **Up ✅ — FIXED (commit cd767cf)** | ✅ |
 | Hyperswitch Control Center | Docker :8097, Up | **Up ✅ (`banxe-hyperswitch-ui`)** | ✅ |
-| Hyperswitch Card Vault | Docker :8098, Up | **Exited(101) — config error** | ❌ |
+| Hyperswitch Card Vault | Docker :8098, Up | **Up ✅ — FIXED (commit cd767cf)** | ✅ |
 | Hyperswitch Postgres | Internal Docker | Up (healthy, `banxe-hyperswitch-pg`) | ✅ |
 | Midaz Ledger | Docker :8095, активен | **Контейнер не запущен** | ❌ |
 | Compliance API | Docker :8093, активен | **Не запущен** | ❌ |
@@ -42,8 +42,8 @@
 | Контейнер | Образ | Статус | Порт |
 |-----------|-------|--------|------|
 | `banxe-hyperswitch-ui` | `juspaydotin/hyperswitch-control-center:latest` | **Up 4h** | `:8097` ✅ |
-| `banxe-hyperswitch-app` | `juspaydotin/hyperswitch-router:latest` | **Exited(101)** | — ❌ |
-| `banxe-hyperswitch-vault` | `juspaydotin/hyperswitch-card-vault:latest` | **Exited(101)** | — ❌ |
+| `banxe-hyperswitch-app` | `juspaydotin/hyperswitch-router:v1.122.0` | **Up ✅** | `:8096` ✅ |
+| `banxe-hyperswitch-vault` | `juspaydotin/hyperswitch-card-vault` | **Up ✅** | `:8098` ✅ |
 | `banxe-hyperswitch-pg` | `postgres:16-alpine` | Up (healthy) | internal 5432 |
 | `banxe-postgres` | `pgvector/pgvector:pg17` | Up 35h (healthy) | `:5432` |
 | `banxe-n8n` | `n8nio/n8n:latest` | Up 35h | `:5678` |
