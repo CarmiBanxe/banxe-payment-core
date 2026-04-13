@@ -1,18 +1,118 @@
-# Hyperswitch full stack — Sprint 9
-# USE: git clone https://github.com/juspay/hyperswitch on GMKtec
-# Then apply port remaps below:
-#   sed -i 's/"5432:5432"/"5434:5432"/g' docker-compose.yml
-#   sed -i 's/"8080:8080"/"8096:8080"/g' docker-compose.yml  
-#   sed -i 's/"6379:6379"/"6380:6379"/g' docker-compose.yml
-#   sed -i 's/"9000:8080"/"8097:8080"/g' docker-compose.yml
-#   docker compose up -d
-#
-# Ports (ADR-015 / SERVICE-MAP):
-#   App Server:       8096
-#   Control Center:   8097
-#   Web SDK:          9050
-#   PG (internal):    5434
-#   Redis (internal): 6380
-#
-# NOTE: Official juspay/hyperswitch docker-compose is used directly.
-# This file documents port remapping only.
+# Hyperswitch full stack — Sprint 9 / ADR-015
+# Ports: App :8096, Control Center :8097, Vault :8098
+# Router config: docker/config/sandbox.toml
+# Vault config: env vars (locker binary doesn't read config file from mount)
+
+networks:
+  banxe-payment:
+    external: true
+  docker_default:
+    external: true   # banxe-redis lives here
+
+volumes:
+  hyperswitch-pg-data:
+    external: true
+    name: docker_hyperswitch-pg-data
+
+services:
+
+  hyperswitch-pg:
+    image: postgres:16-alpine
+    container_name: banxe-hyperswitch-pg
+    environment:
+      - POSTGRES_USER=hyperswitch
+      - POSTGRES_PASSWORD=REDACTED_MASTER_KEY
+      - POSTGRES_DB=hyperswitch_db
+    volumes:
+      - hyperswitch-pg-data:/var/lib/postgresql/data
+    networks:
+      - banxe-payment
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hyperswitch -d hyperswitch_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  hyperswitch-vault:
+    image: juspaydotin/hyperswitch-card-vault@sha256:c2f3b6ae277bb8a4d15aed56dff932086ef7a9a3cc989a557feabc9bc6b72b15
+    container_name: banxe-hyperswitch-vault
+    command: ["./locker"]
+    environment:
+      # Log
+      - LOCKER__LOG__CONSOLE__ENABLED=true
+      - LOCKER__LOG__CONSOLE__LEVEL=INFO
+      - LOCKER__LOG__CONSOLE__LOG_FORMAT=default
+      # Server
+      - LOCKER__SERVER__HOST=0.0.0.0
+      - LOCKER__SERVER__PORT=8080
+      # Rate limit
+      - LOCKER__LIMIT__REQUEST_COUNT=100
+      - LOCKER__LIMIT__DURATION=60
+      # Database
+      - LOCKER__DATABASE__USERNAME=hyperswitch
+      - LOCKER__DATABASE__PASSWORD=REDACTED_MASTER_KEY
+      - LOCKER__DATABASE__HOST=hyperswitch-pg
+      - LOCKER__DATABASE__PORT=5432
+      - LOCKER__DATABASE__DBNAME=hyperswitch_locker
+      # Cache
+      - LOCKER__CACHE__TTI=7200
+      - LOCKER__CACHE__MAX_CAPACITY=5000
+      # Secrets (empty keys OK in sandbox per official development.toml)
+      - LOCKER__SECRETS__LOCKER_PRIVATE_KEY=
+      # Tenant secrets (inline table flattened)
+      - LOCKER__TENANT_SECRETS__PUBLIC__MASTER_KEY=REDACTED_GCM_KEY
+      - LOCKER__TENANT_SECRETS__PUBLIC__PUBLIC_KEY=
+      - LOCKER__TENANT_SECRETS__PUBLIC__SCHEMA=public
+      # External key manager
+      - LOCKER__EXTERNAL_KEY_MANAGER__MODE=disabled
+    ports:
+      - "8098:8080"
+    networks:
+      - banxe-payment
+    depends_on:
+      hyperswitch-pg:
+        condition: service_healthy
+    restart: unless-stopped
+
+  hyperswitch-server:
+    image: juspaydotin/hyperswitch-router@sha256:99dd2395495c6449df3a7717179e687920ae9606d2f7c959e3096937b2e3ec6a
+    container_name: banxe-hyperswitch-app
+    command: ["/bin/sh", "-c", "./router"]
+    volumes:
+      - ./config/sandbox.toml:/local/config/sandbox.toml:ro
+    environment:
+      - RUN_ENV=sandbox
+      - CONFIG_DIR=/local/config
+      - SCHEDULER_FLOW=consumer
+      - RUST_MIN_STACK=6291456
+      - TZ=Etc/UTC
+      - ROUTER__SECRETS__MASTER_ENC_KEY=REDACTED_HEX_KEY
+      - ROUTER__SECRETS__ADMIN_API_KEY=banxe_admin_api_key_2026
+      - ROUTER__SECRETS__JWT_SECRET=REDACTED_JWT_SECRET
+      - ROUTER__API_KEYS__HASH_KEY=REDACTED_HEX_KEY
+      - ROUTER__LOCK_SETTINGS__REDIS_LOCK_EXPIRY_SECONDS=180
+      - ROUTER__LOCK_SETTINGS__DELAY_BETWEEN_RETRIES_IN_MILLISECONDS=500
+      - ROUTER__LOG__FILE__ENABLED=false
+      - ROUTER__LOG__CONSOLE__ENABLED=true
+      - ROUTER__LOG__CONSOLE__LEVEL=INFO
+    ports:
+      - "8096:8080"
+    networks:
+      - banxe-payment
+      - docker_default
+    depends_on:
+      hyperswitch-pg:
+        condition: service_healthy
+      hyperswitch-vault:
+        condition: service_started
+    restart: unless-stopped
+
+  hyperswitch-ui:
+    image: juspaydotin/hyperswitch-control-center:latest
+    container_name: banxe-hyperswitch-ui
+    ports:
+      - "8097:9000"
+    networks:
+      - banxe-payment
+    restart: unless-stopped
