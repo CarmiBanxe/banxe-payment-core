@@ -89,4 +89,4 @@ class IPMParser:
     @staticmethod
     def _parse_amount(raw: bytes) -> int:
         """Convert IPM amount field (BCD) to integer minor units. Never float (I-05)."""
-        return int(raw.hex())
+        return int.from_bytes(raw, "big")
