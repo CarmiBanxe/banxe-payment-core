@@ -28,10 +28,9 @@ Key data elements for reconciliation:
 - DE49: Transaction Currency Code
 - DE50: Settlement Currency Code
 """
+
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -40,24 +39,25 @@ logger = logging.getLogger(__name__)
 @dataclass
 class IPMRecord:
     """Parsed IPM settlement record."""
-    mti: str = ""                    # Message Type Indicator (1240, 1442, etc)
-    de2_pan: str = ""                # Primary Account Number (masked)
-    de3_proc_code: str = ""          # Processing Code
-    de4_txn_amount: int = 0          # Transaction Amount (cents)
-    de5_settlement_amount: int = 0   # Settlement Amount (cents)
-    de6_billing_amount: int = 0      # Cardholder Billing Amount (cents)
-    de12_time: str = ""              # Local Transaction Time (HHmmss)
-    de13_date: str = ""              # Local Transaction Date (MMDD)
-    de24_function_code: str = ""     # Function Code
-    de25_reason_code: str = ""       # Message Reason Code
-    de26_mcc: str = ""               # Merchant Category Code
-    de31_acquirer_ref: str = ""      # Acquirer Reference Data
-    de38_approval_code: str = ""     # Approval Code
-    de42_acceptor_id: str = ""       # Card Acceptor ID
-    de49_txn_currency: str = ""      # Transaction Currency (ISO numeric)
-    de50_settle_currency: str = ""   # Settlement Currency (ISO numeric)
-    de63_trace_id: str = ""          # Transaction lifecycle trace ID
-    raw_line: str = ""               # Original raw record
+
+    mti: str = ""  # Message Type Indicator (1240, 1442, etc)
+    de2_pan: str = ""  # Primary Account Number (masked)
+    de3_proc_code: str = ""  # Processing Code
+    de4_txn_amount: int = 0  # Transaction Amount (cents)
+    de5_settlement_amount: int = 0  # Settlement Amount (cents)
+    de6_billing_amount: int = 0  # Cardholder Billing Amount (cents)
+    de12_time: str = ""  # Local Transaction Time (HHmmss)
+    de13_date: str = ""  # Local Transaction Date (MMDD)
+    de24_function_code: str = ""  # Function Code
+    de25_reason_code: str = ""  # Message Reason Code
+    de26_mcc: str = ""  # Merchant Category Code
+    de31_acquirer_ref: str = ""  # Acquirer Reference Data
+    de38_approval_code: str = ""  # Approval Code
+    de42_acceptor_id: str = ""  # Card Acceptor ID
+    de49_txn_currency: str = ""  # Transaction Currency (ISO numeric)
+    de50_settle_currency: str = ""  # Settlement Currency (ISO numeric)
+    de63_trace_id: str = ""  # Transaction lifecycle trace ID
+    raw_line: str = ""  # Original raw record
     line_number: int = 0
 
     @property
@@ -86,9 +86,15 @@ class IPMRecord:
 
 
 CURRENCY_MAP = {
-    "826": "GBP", "840": "USD", "978": "EUR",
-    "756": "CHF", "392": "JPY", "036": "AUD",
-    "124": "CAD", "344": "HKD", "702": "SGD",
+    "826": "GBP",
+    "840": "USD",
+    "978": "EUR",
+    "756": "CHF",
+    "392": "JPY",
+    "036": "AUD",
+    "124": "CAD",
+    "344": "HKD",
+    "702": "SGD",
 }
 
 
@@ -109,7 +115,7 @@ class IPMParser:
         if not filepath.exists():
             raise FileNotFoundError(f"IPM file not found: {filepath}")
         logger.info("Parsing IPM file: %s", filepath)
-        with open(filepath, "r", encoding="latin-1") as f:
+        with open(filepath, encoding="latin-1") as f:
             lines = f.readlines()
         return self.parse_lines(lines)
 
@@ -134,11 +140,15 @@ class IPMParser:
             except Exception as e:
                 self.errors.append(f"Line {i}: {e}")
                 logger.warning("IPM parse error line %d: %s", i, e)
-        logger.info("Parsed %d records, %d errors from %d lines",
-                     len(self.records), len(self.errors), len(lines))
+        logger.info(
+            "Parsed %d records, %d errors from %d lines",
+            len(self.records),
+            len(self.errors),
+            len(lines),
+        )
         return self.records
 
-    def _parse_record(self, line: str, line_num: int) -> Optional[IPMRecord]:
+    def _parse_record(self, line: str, line_num: int) -> IPMRecord | None:
         mti = line[:4]
         if mti not in ("1240", "1442", "1740", "1644"):
             return None

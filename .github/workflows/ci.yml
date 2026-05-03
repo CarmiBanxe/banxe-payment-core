@@ -1,5 +1,9 @@
 name: CI — banxe-payment-core
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [main, "feature/**", "fix/**"]
@@ -33,9 +37,7 @@ jobs:
 
       - name: Semgrep BANXE rules
         run: semgrep --config .semgrep/rules.yaml src/ --error
-        continue-on-error: true
-
-      - name: pytest (coverage ≥80%)
+      - name: pytest --cov-fail-under=80 (coverage ≥80%)
         run: pytest --tb=short -q
 
       - name: Upload coverage report

@@ -2,30 +2,33 @@
 Target: bring coverage of src/paymentology/ from 76.77% to 85%+.
 Covers: adapter.py, remote_handler.py, webhook_server.py edge cases.
 """
-import pytest
-import hmac
+
 import hashlib
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+import hmac
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from src.paymentology.adapter import (
+    CardHolder,
+    CardResponse,
+    PaymentologyAdapter,
+    PaymentologyConfig,
+)
 from src.paymentology.checksum import compute_checksum
-from src.paymentology.xmlrpc_builder import build_request, parse_response
 from src.paymentology.remote_handler import (
     RemoteAPIHandler,
     build_xml_response,
-    BalanceProvider,
 )
-from src.paymentology.adapter import (
-    PaymentologyAdapter,
-    PaymentologyConfig,
-    CardHolder,
-    CardResponse,
-)
-
+from src.paymentology.xmlrpc_builder import build_request, parse_response
 
 # ─── Shared mock fixture ────────────────────────────────────────────────────
 
+
 class MockBalanceProvider:
     """Mock BalanceProvider for unit tests (no real wallet)."""
+
     def __init__(self, balance: int = 100_00, deduct_ok: bool = True, reverse_ok: bool = True):
         self.balance = balance
         self.deduct_ok = deduct_ok
@@ -42,6 +45,7 @@ class MockBalanceProvider:
 
 
 # ─── Checksum extended ──────────────────────────────────────────────────────
+
 
 class TestChecksumExtended:
     def test_empty_params(self):
@@ -68,6 +72,7 @@ class TestChecksumExtended:
 
 # ─── XML-RPC builder extended ────────────────────────────────────────────────
 
+
 class TestXmlRpcBuilderExtended:
     def test_build_request_xml_declaration(self):
         xml = build_request("MyMethod", [("string", "val")])
@@ -86,8 +91,8 @@ class TestXmlRpcBuilderExtended:
         """Paymentology sometimes returns <i4> instead of <int>."""
         xml = (
             '<?xml version="1.0"?><methodResponse><params><param><value><struct>'
-            '<member><name>resultCode</name><value><i4>1</i4></value></member>'
-            '</struct></value></param></params></methodResponse>'
+            "<member><name>resultCode</name><value><i4>1</i4></value></member>"
+            "</struct></value></param></params></methodResponse>"
         )
         result = parse_response(xml)
         assert result["resultCode"] == 1
@@ -95,9 +100,9 @@ class TestXmlRpcBuilderExtended:
     def test_parse_response_datetime_field(self):
         xml = (
             '<?xml version="1.0"?><methodResponse><params><param><value><struct>'
-            '<member><name>resultCode</name><value><int>1</int></value></member>'
-            '<member><name>txnDate</name><value><dateTime.iso8601>20260413T12:00:00</dateTime.iso8601></value></member>'
-            '</struct></value></param></params></methodResponse>'
+            "<member><name>resultCode</name><value><int>1</int></value></member>"
+            "<member><name>txnDate</name><value><dateTime.iso8601>20260413T12:00:00</dateTime.iso8601></value></member>"
+            "</struct></value></param></params></methodResponse>"
         )
         result = parse_response(xml)
         assert result["txnDate"] == "20260413T12:00:00"
@@ -105,14 +110,15 @@ class TestXmlRpcBuilderExtended:
     def test_parse_response_empty_string_field(self):
         xml = (
             '<?xml version="1.0"?><methodResponse><params><param><value><struct>'
-            '<member><name>cvv2</name><value><string></string></value></member>'
-            '</struct></value></param></params></methodResponse>'
+            "<member><name>cvv2</name><value><string></string></value></member>"
+            "</struct></value></param></params></methodResponse>"
         )
         result = parse_response(xml)
         assert result["cvv2"] == ""
 
 
 # ─── build_xml_response extended ───────────────────────────────────────────────
+
 
 class TestBuildXmlResponseExtended:
     def test_failure_code(self):
@@ -142,6 +148,7 @@ class TestBuildXmlResponseExtended:
 
 # ─── RemoteAPIHandler extended ────────────────────────────────────────────────
 
+
 class TestRemoteHandlerExtended:
     def _make_handler(self, balance=10000, deduct_ok=True, reverse_ok=True):
         provider = MockBalanceProvider(balance, deduct_ok, reverse_ok)
@@ -150,42 +157,42 @@ class TestRemoteHandlerExtended:
     def _deduct_xml(self, amount: int = 500, method: str = "Deduct") -> str:
         return (
             f'<?xml version="1.0"?><methodCall>'
-            f'<methodName>{method}</methodName><params>'
-            f'<param><value><string>TERM01</string></value></param>'
-            f'<param><value><string>REF001</string></value></param>'
-            f'<param><value><int>{amount}</int></value></param>'
-            f'<param><value><string>Purchase</string></value></param>'
-            f'<param><value><string>SALE</string></value></param>'
-            f'<param><value><string>DATA</string></value></param>'
-            f'<param><value><string>TXN-001</string></value></param>'
-            f'<param><value><string>20260413T01:00:00</string></value></param>'
-            f'<param><value><string>FAKECHECKSUM</string></value></param>'
-            f'</params></methodCall>'
+            f"<methodName>{method}</methodName><params>"
+            f"<param><value><string>TERM01</string></value></param>"
+            f"<param><value><string>REF001</string></value></param>"
+            f"<param><value><int>{amount}</int></value></param>"
+            f"<param><value><string>Purchase</string></value></param>"
+            f"<param><value><string>SALE</string></value></param>"
+            f"<param><value><string>DATA</string></value></param>"
+            f"<param><value><string>TXN-001</string></value></param>"
+            f"<param><value><string>20260413T01:00:00</string></value></param>"
+            f"<param><value><string>FAKECHECKSUM</string></value></param>"
+            f"</params></methodCall>"
         )
 
     def _balance_xml(self) -> str:
         return (
             '<?xml version="1.0"?><methodCall>'
-            '<methodName>Balance</methodName><params>'
-            '<param><value><string>TERM01</string></value></param>'
-            '<param><value><string>REF001</string></value></param>'
-            '<param><value><string>TXN-002</string></value></param>'
-            '<param><value><string>20260413T01:00:00</string></value></param>'
-            '<param><value><string>FAKECS</string></value></param>'
-            '</params></methodCall>'
+            "<methodName>Balance</methodName><params>"
+            "<param><value><string>TERM01</string></value></param>"
+            "<param><value><string>REF001</string></value></param>"
+            "<param><value><string>TXN-002</string></value></param>"
+            "<param><value><string>20260413T01:00:00</string></value></param>"
+            "<param><value><string>FAKECS</string></value></param>"
+            "</params></methodCall>"
         )
 
     def _reversal_xml(self) -> str:
         return (
             '<?xml version="1.0"?><methodCall>'
-            '<methodName>DeductReversal</methodName><params>'
-            '<param><value><string>TERM01</string></value></param>'
-            '<param><value><string>REF001</string></value></param>'
-            '<param><value><int>500</int></value></param>'
-            '<param><value><string>TXN-001</string></value></param>'
-            '<param><value><string>20260413T01:00:00</string></value></param>'
-            '<param><value><string>FAKECS</string></value></param>'
-            '</params></methodCall>'
+            "<methodName>DeductReversal</methodName><params>"
+            "<param><value><string>TERM01</string></value></param>"
+            "<param><value><string>REF001</string></value></param>"
+            "<param><value><int>500</int></value></param>"
+            "<param><value><string>TXN-001</string></value></param>"
+            "<param><value><string>20260413T01:00:00</string></value></param>"
+            "<param><value><string>FAKECS</string></value></param>"
+            "</params></methodCall>"
         )
 
     @pytest.mark.asyncio
@@ -215,13 +222,17 @@ class TestRemoteHandlerExtended:
     @pytest.mark.asyncio
     async def test_handle_deduct_reversal_ok(self):
         handler = self._make_handler(reverse_ok=True)
-        result = await handler.handle_deduct_reversal("TERM01", "REF001", 500, "TXN-001", "20260413", "CS")
+        result = await handler.handle_deduct_reversal(
+            "TERM01", "REF001", 500, "TXN-001", "20260413", "CS"
+        )
         assert "<int>1</int>" in result
 
     @pytest.mark.asyncio
     async def test_handle_deduct_reversal_failed(self):
         handler = self._make_handler(reverse_ok=False)
-        result = await handler.handle_deduct_reversal("TERM01", "REF001", 500, "TXN-001", "20260413", "CS")
+        result = await handler.handle_deduct_reversal(
+            "TERM01", "REF001", 500, "TXN-001", "20260413", "CS"
+        )
         assert "<int>0</int>" in result
 
     @pytest.mark.asyncio
@@ -248,8 +259,8 @@ class TestRemoteHandlerExtended:
         handler = self._make_handler()
         xml = (
             '<?xml version="1.0"?><methodCall>'
-            '<methodName>StopCard</methodName>'
-            '<params></params></methodCall>'
+            "<methodName>StopCard</methodName>"
+            "<params></params></methodCall>"
         )
         result = await handler.dispatch(xml)
         assert "<int>0</int>" in result
@@ -271,19 +282,19 @@ class TestRemoteHandlerExtended:
 
 SUCCESS_XML = (
     '<?xml version="1.0"?><methodResponse><params><param><value><struct>'
-    '<member><name>resultCode</name><value><int>1</int></value></member>'
-    '<member><name>cardNumber</name><value><string>4111000011110000</string></value></member>'
-    '<member><name>cvv2</name><value><string>123</string></value></member>'
-    '<member><name>expiryDate</name><value><string>2029-01-01</string></value></member>'
-    '<member><name>trackingNumber</name><value><string>TRK001</string></value></member>'
-    '</struct></value></param></params></methodResponse>'
+    "<member><name>resultCode</name><value><int>1</int></value></member>"
+    "<member><name>cardNumber</name><value><string>4111000011110000</string></value></member>"
+    "<member><name>cvv2</name><value><string>123</string></value></member>"
+    "<member><name>expiryDate</name><value><string>2029-01-01</string></value></member>"
+    "<member><name>trackingNumber</name><value><string>TRK001</string></value></member>"
+    "</struct></value></param></params></methodResponse>"
 )
 
 FAIL_XML = (
     '<?xml version="1.0"?><methodResponse><params><param><value><struct>'
-    '<member><name>resultCode</name><value><int>0</int></value></member>'
-    '<member><name>resultText</name><value><string>Declined</string></value></member>'
-    '</struct></value></param></params></methodResponse>'
+    "<member><name>resultCode</name><value><int>0</int></value></member>"
+    "<member><name>resultText</name><value><string>Declined</string></value></member>"
+    "</struct></value></param></params></methodResponse>"
 )
 
 
@@ -320,7 +331,9 @@ class TestCardHolder:
 
 class TestCardResponse:
     def test_success_response(self):
-        r = CardResponse(success=True, result_code=1, result_text="OK", card_number="4111000011110000")
+        r = CardResponse(
+            success=True, result_code=1, result_text="OK", card_number="4111000011110000"
+        )
         assert r.success is True
         assert r.card_number == "4111000011110000"
 
@@ -346,7 +359,7 @@ class TestPaymentologyAdapterHTTP:
         adapter._client = mock_client
 
         holder = CardHolder(reference="REF001", first_name="Jane", last_name="Smith")
-        expiry = datetime(2029, 1, 1, tzinfo=timezone.utc)
+        expiry = datetime(2029, 1, 1, tzinfo=UTC)
         result = await adapter.create_virtual_card(holder, expiry)
 
         assert result.success is True
@@ -366,7 +379,7 @@ class TestPaymentologyAdapterHTTP:
         adapter._client = mock_client
 
         holder = CardHolder(reference="REF002", first_name="Bad", last_name="Actor")
-        expiry = datetime(2029, 1, 1, tzinfo=timezone.utc)
+        expiry = datetime(2029, 1, 1, tzinfo=UTC)
         result = await adapter.create_virtual_card(holder, expiry)
 
         assert result.success is False
@@ -445,11 +458,14 @@ class TestPaymentologyAdapterHTTP:
 
 # ─── Webhook server ──────────────────────────────────────────────────────────────
 
+
 class TestWebhookServer:
     def test_health_endpoint(self):
         """Health endpoint must return 200 with status ok."""
         from fastapi.testclient import TestClient
-        from src.paymentology.webhook_server import app, init_webhook
+
+        from src.paymentology.webhook_server import app
+
         client = TestClient(app)
         resp = client.get("/health")
         assert resp.status_code == 200
@@ -458,8 +474,10 @@ class TestWebhookServer:
     def test_webhook_no_handler_returns_zero(self):
         """If handler not initialised, webhook returns resultCode=0."""
         from fastapi.testclient import TestClient
-        from src.paymentology.webhook_server import app
+
         import src.paymentology.webhook_server as ws
+        from src.paymentology.webhook_server import app
+
         ws._handler = None  # ensure no handler
         client = TestClient(app)
         resp = client.post(
@@ -474,20 +492,22 @@ class TestWebhookServer:
     async def test_webhook_with_handler(self):
         """Webhook dispatches to handler and returns XML response."""
         from fastapi.testclient import TestClient
-        from src.paymentology.webhook_server import app, init_webhook
+
         import src.paymentology.webhook_server as ws
+        from src.paymentology.webhook_server import app
+
         provider = MockBalanceProvider(balance=12345)
         handler = RemoteAPIHandler(provider, "testpass")
         ws._handler = handler
         client = TestClient(app)
         xml_body = (
             b'<?xml version="1.0"?><methodCall>'
-            b'<methodName>Balance</methodName><params>'
-            b'<param><value><string>T1</string></value></param>'
-            b'<param><value><string>REF1</string></value></param>'
-            b'<param><value><string>TXN1</string></value></param>'
-            b'<param><value><string>20260413</string></value></param>'
-            b'</params></methodCall>'
+            b"<methodName>Balance</methodName><params>"
+            b"<param><value><string>T1</string></value></param>"
+            b"<param><value><string>REF1</string></value></param>"
+            b"<param><value><string>TXN1</string></value></param>"
+            b"<param><value><string>20260413</string></value></param>"
+            b"</params></methodCall>"
         )
         resp = client.post(
             "/paymentology/webhook",
