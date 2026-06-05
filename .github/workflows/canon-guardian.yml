@@ -1,0 +1,230 @@
+name: Canon Guardian
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  axiom-consistency:
+    name: Axiom consistency + factory/project separation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify CANON.md version header
+        run: |
+          head -2 CANON.md | grep -q "^Canon version: " || (echo "::error::CANON.md missing version header"; exit 1)
+          head -2 CANON.md | grep -q "^Date: " || (echo "::error::CANON.md missing Date header"; exit 1)
+
+      - name: Verify .clauderules mirrors axiom
+        run: |
+          for n in 1 2 3 4 5; do
+            grep -q "^${n}\. " .clauderules || (echo "::error::.clauderules missing axiom rule ${n}"; exit 1)
+            grep -q "^${n}\. " CANON.md || (echo "::error::CANON.md missing axiom rule ${n}"; exit 1)
+          done
+
+      - name: Verify ADR-0001 exists and references CANON v1.2 or higher
+        run: |
+          test -f docs/adr/ADR-0001-decision-making-axiom.md || (echo "::error::ADR-0001 missing"; exit 1)
+          grep -qE "Canon version: 1\.[2-9]|Canon version: [2-9]" docs/adr/ADR-0001-decision-making-axiom.md \
+            || (echo "::error::ADR-0001 must reference Canon version >= 1.2"; exit 1)
+
+      - name: Forbid bank-project leaks in L0-L2 governance files
+        run: |
+          set -e
+          FILES="CANON.md .clauderules docs/canon/CANON-TOPOLOGY.md docs/canon/PATTERNS.md docs/adr/ADR-0001-decision-making-axiom.md .claude/agents/canon-guardian.md"
+          PATTERN="banxe-payment-core|banxe-ui|banxe-infra|apps/web|apps/mobile|pnpm |npx expo"
+          for f in $FILES; do
+            [ -f "$f" ] || continue
+            # Lines tagged with META-MENTION-OK are intentional meta-mentions (rules describing what is forbidden),
+            # not bank-project logic. They are allowed.
+            if grep -nE "$PATTERN" "$f" | grep -v "META-MENTION-OK" >/dev/null; then
+              echo "::error file=$f::bank-project leak detected in factory governance file"
+              grep -nE "$PATTERN" "$f" | grep -v "META-MENTION-OK"
+              exit 1
+            fi
+          done
+
+      - name: Forbid legal-domain modifiers in canon
+        run: |
+          set -e
+          FILES="CANON.md .clauderules docs/canon/CANON-TOPOLOGY.md docs/canon/PATTERNS.md docs/adr/ADR-0001-decision-making-axiom.md .claude/agents/canon-guardian.md"
+          for f in $FILES; do
+            [ -f "$f" ] || continue
+            if grep -nE "!eucourt|!echrsearch|!cjeusearch|!ultralegal|!legalqa|ratio decidendi|dispositif|Plan 7|CURIA|HUDOC|EUR-Lex" "$f" >/dev/null; then
+              if ! grep -nE "Forbidden modifiers|Forbidden modules|Non-legal scope|excluded from" "$f" >/dev/null; then
+                echo "::error file=$f::legal-domain content found outside an explicit non-legal exclusion block"
+                exit 1
+              fi
+            fi
+          done
+
+      - name: Verify single-source axiom matches across controlled copies
+        run: |
+          set -e
+          axiom_canon=$(awk '/^## Decision-Making Axiom \(Canon\)/{flag=1; next} /^## /{flag=0} flag' CANON.md | sed -n '1,12p')
+          axiom_rules=$(awk '/^## Decision-Making Axiom \(Canon\)/{flag=1; next} /^## /{flag=0} flag' .clauderules | sed -n '1,12p')
+          if [ "$axiom_canon" != "$axiom_rules" ]; then
+            echo "::error::Axiom drift between CANON.md and .clauderules"
+            diff <(printf '%s\n' "$axiom_canon") <(printf '%s\n' "$axiom_rules") || true
+            exit 1
+          fi
+
+      # ── v1.3 enforcement checks (7–15) ────────────────────────────────────
+
+      - name: "Check 7: OVERRIDES.md exists with ≥31 override definitions"
+        run: |
+          set -euo pipefail
+          test -f docs/canon/OVERRIDES.md || (echo "::error file=docs/canon/OVERRIDES.md::OVERRIDES.md missing (v1.3 §6)"; exit 1)
+          COUNT=$(grep -c '^## !' docs/canon/OVERRIDES.md || true)
+          [ "$COUNT" -ge 31 ] || (echo "::error file=docs/canon/OVERRIDES.md::Expected ≥31 override definitions (^## !), found $COUNT (v1.3 §6)"; exit 1)
+
+      - name: "Check 8: MODULES.md exists with ≥6 module definitions"
+        run: |
+          set -euo pipefail
+          test -f docs/canon/MODULES.md || (echo "::error file=docs/canon/MODULES.md::MODULES.md missing (v1.3 §6)"; exit 1)
+          TOTAL=$(grep -c '^## ' docs/canon/MODULES.md || true)
+          META=$(grep -cE '^## (Format|Common|Forbidden|Anchoring|Combination)' docs/canon/MODULES.md || true)
+          EFFECTIVE=$((TOTAL - META))
+          [ "$EFFECTIVE" -ge 6 ] || (echo "::error file=docs/canon/MODULES.md::Expected ≥6 module definitions, found $EFFECTIVE (v1.3 §6)"; exit 1)
+
+      - name: "Check 9: PATTERNS.md exists and is non-empty"
+        run: |
+          set -euo pipefail
+          test -f docs/canon/PATTERNS.md || (echo "::error file=docs/canon/PATTERNS.md::PATTERNS.md missing (v1.3 §7)"; exit 1)
+          test -s docs/canon/PATTERNS.md || (echo "::error file=docs/canon/PATTERNS.md::PATTERNS.md is empty (v1.3 §7)"; exit 1)
+
+      - name: "Check 10: CANON-TRACE.md exists and references both integration sources"
+        run: |
+          set -euo pipefail
+          test -f docs/canon/CANON-TRACE.md || (echo "::error file=docs/canon/CANON-TRACE.md::CANON-TRACE.md missing (v1.3 §5)"; exit 1)
+          grep -q "CORE v4.11.1" docs/canon/CANON-TRACE.md || (echo "::error file=docs/canon/CANON-TRACE.md::Missing CORE v4.11.1 reference"; exit 1)
+          grep -q "Universalnyi v4.15.1" docs/canon/CANON-TRACE.md || (echo "::error file=docs/canon/CANON-TRACE.md::Missing Universalnyi v4.15.1 reference"; exit 1)
+
+      - name: "Check 11: CANON-TOPOLOGY.md version matches CANON.md"
+        run: |
+          set -euo pipefail
+          VER_CANON=$(grep -m1 '^Canon version: ' CANON.md | sed 's/^Canon version: //')
+          VER_TOPO=$(grep -m1 '^Canon version: ' docs/canon/CANON-TOPOLOGY.md | sed 's/^Canon version: //')
+          [ "$VER_CANON" = "$VER_TOPO" ] || (echo "::error file=docs/canon/CANON-TOPOLOGY.md::Version mismatch: CANON.md=$VER_CANON, TOPOLOGY=$VER_TOPO"; exit 1)
+
+      - name: "Check 12: CANON-AUDIT-REPORT.md freshness (v1.3 §4)"
+        run: |
+          set -euo pipefail
+          VER_CANON=$(grep -m1 '^Canon version: ' CANON.md | sed 's/^Canon version: //')
+          grep -q "Canon version: ${VER_CANON}" docs/canon/CANON-AUDIT-REPORT.md \
+            || (echo "::error file=docs/canon/CANON-AUDIT-REPORT.md::Audit report not updated to Canon v${VER_CANON} (v1.3 §4 Audit Freshness Rule)"; exit 1)
+
+      - name: "Check 13: Controlled extensions anchored to v1.3+"
+        run: |
+          set -euo pipefail
+          for f in .claude/agents/canon-guardian.md quality-core/.claude/agents/factory-watchdog.md; do
+            [ -f "$f" ] || (echo "::error file=$f::File missing"; exit 1)
+            grep -qE "CANON\.md v1\.[3-9]|CANON\.md v[2-9]" "$f" \
+              || (echo "::error file=$f::Controlled extension not anchored to CANON.md v1.3+ (propagation required)"; exit 1)
+          done
+
+      - name: "Check 14: Forbidden overrides mirrored in OVERRIDES.md"
+        run: |
+          set -euo pipefail
+          FORBIDDEN=$(awk '/^Forbidden modifiers:/{flag=1} flag && /!/{print; next} flag && /^$/{flag=0}' CANON.md | grep -oE '![a-z][a-z-]+' | sort -u)
+          for cmd in $FORBIDDEN; do
+            grep -q "$cmd" docs/canon/OVERRIDES.md \
+              || (echo "::error file=docs/canon/OVERRIDES.md::Forbidden modifier $cmd from CANON.md §10 not mirrored in OVERRIDES.md"; exit 1)
+          done
+
+      - name: "Check 15: Forbidden modules mirrored in MODULES.md"
+        run: |
+          set -euo pipefail
+          FORBIDDEN_LINE=$(grep -m1 '^Forbidden modules:' CANON.md)
+          FORBIDDEN=$(echo "$FORBIDDEN_LINE" | sed 's/^Forbidden modules://' | tr ',' '\n' | sed 's/[. ]//g' | sort -u | grep -v '^$')
+          for mod in $FORBIDDEN; do
+            grep -qi "$mod" docs/canon/MODULES.md \
+              || (echo "::error file=docs/canon/MODULES.md::Forbidden module '$mod' from CANON.md §11 not mirrored in MODULES.md"; exit 1)
+          done
+
+      # ── v1.4 enforcement: canon extension rules present in source + mirror (A1,A5,A6,A7) ──
+
+      - name: "Check 16: Pre-output lock (A1) present in CANON.md and .clauderules"
+        run: |
+          set -euo pipefail
+          grep -q "Pre-output lock" CANON.md \
+            || (echo "::error file=CANON.md::Pre-output lock section missing (v1.2 §1)"; exit 1)
+          grep -qi "pre-output lock" .clauderules \
+            || (echo "::error file=.clauderules::Pre-output lock not mirrored from CANON.md (A1)"; exit 1)
+
+      - name: "Check 17: Self-Critique (A5) present in CANON.md and .clauderules"
+        run: |
+          set -euo pipefail
+          grep -q "Self-Critique" CANON.md \
+            || (echo "::error file=CANON.md::Self-Critique section missing (v1.2 §12)"; exit 1)
+          grep -qi "self-critique" .clauderules \
+            || (echo "::error file=.clauderules::Self-Critique not mirrored from CANON.md (A5)"; exit 1)
+
+      - name: "Check 18: Decision-Brief (A6) present in CANON.md and .clauderules"
+        run: |
+          set -euo pipefail
+          grep -q "Decision-Brief" CANON.md \
+            || (echo "::error file=CANON.md::Decision-Brief section missing (v1.2 §4)"; exit 1)
+          grep -qi "decision-brief" .clauderules \
+            || (echo "::error file=.clauderules::Decision-Brief not mirrored from CANON.md (A6)"; exit 1)
+
+      - name: "Check 19: Plan-Risk-Block (A7) present in CANON.md and .clauderules"
+        run: |
+          set -euo pipefail
+          grep -q "Plan-Risk-Block" CANON.md \
+            || (echo "::error file=CANON.md::Plan-Risk-Block section missing (v1.2 §8)"; exit 1)
+          grep -qi "plan-risk-block" .clauderules \
+            || (echo "::error file=.clauderules::Plan-Risk-Block not mirrored from CANON.md (A7)"; exit 1)
+
+      - name: "Check 20: Epistemic Accuracy Guard (A2) present in CANON.md and .clauderules"
+        run: |
+          set -euo pipefail
+          grep -q "Epistemic Accuracy Guard" CANON.md \
+            || (echo "::error file=CANON.md::Epistemic Accuracy Guard section missing (v1.2 §2)"; exit 1)
+          grep -qi "epistemic accuracy guard" .clauderules \
+            || (echo "::error file=.clauderules::Epistemic Accuracy Guard not mirrored from CANON.md (A2)"; exit 1)
+
+      - name: "Check 21: Output Style Canon (A3) present in CANON.md and .clauderules"
+        run: |
+          set -euo pipefail
+          grep -q "Output Style Canon" CANON.md \
+            || (echo "::error file=CANON.md::Output Style Canon section missing (v1.2 §7)"; exit 1)
+          grep -qi "output style canon" .clauderules \
+            || (echo "::error file=.clauderules::Output Style Canon not mirrored from CANON.md (A3)"; exit 1)
+
+      - name: "Check 22: Question-Audit (A4) present in CANON.md and .clauderules"
+        run: |
+          set -euo pipefail
+          grep -q "Question-Audit" CANON.md \
+            || (echo "::error file=CANON.md::Question-Audit section missing (v1.2 §6)"; exit 1)
+          grep -qi "question-audit" .clauderules \
+            || (echo "::error file=.clauderules::Question-Audit not mirrored from CANON.md (A4)"; exit 1)
+
+      - name: "Check 23: Honest Reporting (F1) present in CANON.md and .clauderules"
+        run: |
+          set -euo pipefail
+          grep -q "Honest Reporting" CANON.md \
+            || (echo "::error file=CANON.md::Honest Reporting section missing (v1.3)"; exit 1)
+          grep -qi "honest reporting" .clauderules \
+            || (echo "::error file=.clauderules::Honest Reporting not mirrored from CANON.md (F1)"; exit 1)
+
+      - name: "Check 24: No-fake-completion rule (F2) present in CANON.md and .clauderules"
+        run: |
+          set -euo pipefail
+          grep -qi "not constitute completion\|substantive completion" CANON.md \
+            || (echo "::error file=CANON.md::Structural-vs-substantive completion rule missing (v1.3)"; exit 1)
+          grep -qi "substantive completion" .clauderules \
+            || (echo "::error file=.clauderules::Completion rule not mirrored from CANON.md (F2)"; exit 1)
+
+      - name: "Check 25: Insertion target (F3) present in CANON.md and .clauderules"
+        run: |
+          set -euo pipefail
+          grep -qi "insertion target" CANON.md \
+            || (echo "::error file=CANON.md::Insertion target rule missing (F3)"; exit 1)
+          grep -qi "insertion target" .clauderules \
+            || (echo "::error file=.clauderules::Insertion target not mirrored from CANON.md (F3)"; exit 1)

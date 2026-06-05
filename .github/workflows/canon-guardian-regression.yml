@@ -1,0 +1,26 @@
+name: Canon Guardian Regression
+on:
+  pull_request:
+    paths:
+      - 'tests/canon-guardian/**'
+      - '.github/workflows/canon-guardian.yml'
+      - '.github/workflows/canon-guardian-regression.yml'
+      - 'CANON.md'
+      - '.clauderules'
+      - 'docs/canon/**'
+      - 'docs/adr/**'
+      - '.claude/agents/canon-guardian.md'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    name: Canon-guardian fixture regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run regression fixtures
+        run: bash tests/canon-guardian/run.sh
