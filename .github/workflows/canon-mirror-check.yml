@@ -1,0 +1,28 @@
+name: Canon Mirror Check
+on:
+  pull_request:
+    paths:
+      - 'CANON.md'
+      - '.clauderules'
+      - '.factory-canon-version'
+      - 'docs/canon/**'
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  mirror-check:
+    name: Canon mirror presence + version pin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify canon mirror integrity
+        run: |
+          set -euo pipefail
+          test -s .factory-canon-version || { echo "::error::.factory-canon-version missing or empty"; exit 1; }
+          test -s CANON.md || { echo "::error::CANON.md missing or empty"; exit 1; }
+          test -s .clauderules || { echo "::error::.clauderules missing or empty"; exit 1; }
+          ver="$(cat .factory-canon-version)"
+          echo "Pinned Factory canon version: $ver"
+          grep -q "Decision-Making Axiom" CANON.md || { echo "::error::CANON.md missing Decision-Making Axiom"; exit 1; }
+          echo "Canon mirror OK."
