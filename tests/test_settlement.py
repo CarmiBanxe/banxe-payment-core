@@ -1,7 +1,6 @@
 """Tests for Mastercard IPM Settlement parser and reconciler."""
-import pytest
-from src.settlement.ipm_parser import IPMParser, IPMRecord, CURRENCY_MAP
-from src.settlement.reconciler import Reconciler, InternalTransaction, ReconciliationResult
+from src.settlement.ipm_parser import IPMParser, IPMRecord
+from src.settlement.reconciler import InternalTransaction, Reconciler, ReconciliationResult
 
 
 class TestIPMRecord:

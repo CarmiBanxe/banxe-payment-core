@@ -1,6 +1,8 @@
 """FastAPI webhook server for Paymentology Remote API callbacks."""
 import logging
+
 from fastapi import FastAPI, Request, Response
+
 from .remote_handler import RemoteAPIHandler
 
 logger = logging.getLogger(__name__)

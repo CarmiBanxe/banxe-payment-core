@@ -2,25 +2,25 @@
 Target: bring coverage of src/paymentology/ from 76.77% to 85%+.
 Covers: adapter.py, remote_handler.py, webhook_server.py edge cases.
 """
-import pytest
-import hmac
 import hashlib
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+import hmac
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from src.paymentology.adapter import (
+    CardHolder,
+    CardResponse,
+    PaymentologyAdapter,
+    PaymentologyConfig,
+)
 from src.paymentology.checksum import compute_checksum
-from src.paymentology.xmlrpc_builder import build_request, parse_response
 from src.paymentology.remote_handler import (
     RemoteAPIHandler,
     build_xml_response,
-    BalanceProvider,
 )
-from src.paymentology.adapter import (
-    PaymentologyAdapter,
-    PaymentologyConfig,
-    CardHolder,
-    CardResponse,
-)
-
+from src.paymentology.xmlrpc_builder import build_request, parse_response
 
 # ─── Shared mock fixture ────────────────────────────────────────────────────
 
@@ -346,7 +346,7 @@ class TestPaymentologyAdapterHTTP:
         adapter._client = mock_client
 
         holder = CardHolder(reference="REF001", first_name="Jane", last_name="Smith")
-        expiry = datetime(2029, 1, 1, tzinfo=timezone.utc)
+        expiry = datetime(2029, 1, 1, tzinfo=UTC)
         result = await adapter.create_virtual_card(holder, expiry)
 
         assert result.success is True
@@ -366,7 +366,7 @@ class TestPaymentologyAdapterHTTP:
         adapter._client = mock_client
 
         holder = CardHolder(reference="REF002", first_name="Bad", last_name="Actor")
-        expiry = datetime(2029, 1, 1, tzinfo=timezone.utc)
+        expiry = datetime(2029, 1, 1, tzinfo=UTC)
         result = await adapter.create_virtual_card(holder, expiry)
 
         assert result.success is False
@@ -449,7 +449,8 @@ class TestWebhookServer:
     def test_health_endpoint(self):
         """Health endpoint must return 200 with status ok."""
         from fastapi.testclient import TestClient
-        from src.paymentology.webhook_server import app, init_webhook
+
+        from src.paymentology.webhook_server import app
         client = TestClient(app)
         resp = client.get("/health")
         assert resp.status_code == 200
@@ -458,8 +459,9 @@ class TestWebhookServer:
     def test_webhook_no_handler_returns_zero(self):
         """If handler not initialised, webhook returns resultCode=0."""
         from fastapi.testclient import TestClient
-        from src.paymentology.webhook_server import app
+
         import src.paymentology.webhook_server as ws
+        from src.paymentology.webhook_server import app
         ws._handler = None  # ensure no handler
         client = TestClient(app)
         resp = client.post(
@@ -474,8 +476,9 @@ class TestWebhookServer:
     async def test_webhook_with_handler(self):
         """Webhook dispatches to handler and returns XML response."""
         from fastapi.testclient import TestClient
-        from src.paymentology.webhook_server import app, init_webhook
+
         import src.paymentology.webhook_server as ws
+        from src.paymentology.webhook_server import app
         provider = MockBalanceProvider(balance=12345)
         handler = RemoteAPIHandler(provider, "testpass")
         ws._handler = handler

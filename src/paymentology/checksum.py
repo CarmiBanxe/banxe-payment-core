@@ -1,6 +1,6 @@
 """HMAC-SHA256 checksum for Paymentology Companion API."""
-import hmac
 import hashlib
+import hmac
 
 
 def compute_checksum(method_name: str, params: list[str], terminal_password: str) -> str:

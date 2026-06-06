@@ -6,8 +6,9 @@ Adapters require external services (Sprint 9/10) — we test:
 - HTTP method behaviour via mocked httpx.AsyncClient
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from src.adapters.hyperswitch_adapter import HyperswitchAdapter
 from src.adapters.midaz_adapter import MidazAdapter
@@ -15,7 +16,6 @@ from src.adapters.paymentology_adapter import PaymentologyAdapter
 from src.ports.issuer_port import IssuerPort
 from src.ports.ledger_port import LedgerEntry, LedgerPort
 from src.ports.payment_switch_port import PaymentRequest, PaymentStatus, PaymentSwitchPort
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -288,7 +288,6 @@ class TestMidazAdapterHTTP:
             {"balance": {"available": 50000, "onHold": 1000}}
         )
         with patch("src.adapters.midaz_adapter.httpx.AsyncClient", return_value=mock_client):
-            from src.ports.ledger_port import BalanceResult
             result = await adapter.get_balance("acc_001", "GBP")
         assert result.available_minor == 50000
         assert result.pending_minor == 1000

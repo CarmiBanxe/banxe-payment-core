@@ -1,10 +1,11 @@
 """PaymentologyAdapter — Local API client for Companion API."""
-import uuid
 import logging
-from datetime import datetime, timezone
+import uuid
 from dataclasses import dataclass
-from typing import Optional
+from datetime import UTC, datetime
+
 import httpx
+
 from .checksum import compute_checksum
 from .xmlrpc_builder import build_request, parse_response
 
@@ -45,7 +46,7 @@ class CardResponse:
 class PaymentologyAdapter:
     def __init__(self, config: PaymentologyConfig):
         self.config = config
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -63,7 +64,7 @@ class PaymentologyAdapter:
         return str(uuid.uuid4())
 
     def _now_iso(self) -> str:
-        return datetime.now(timezone.utc).strftime("%Y%m%dT%H:%M:%S")
+        return datetime.now(UTC).strftime("%Y%m%dT%H:%M:%S")
 
     async def _call(self, method_name: str, params: list[tuple[str, str]]) -> dict:
         xml_body = build_request(method_name, params)

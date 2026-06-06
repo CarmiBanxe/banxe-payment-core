@@ -5,7 +5,7 @@ to identify: matched, unmatched, and discrepancies.
 """
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+
 from .ipm_parser import IPMRecord
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ class InternalTransaction:
 class ReconciliationResult:
     """Result of matching one IPM record."""
     ipm_record: IPMRecord
-    internal_txn: Optional[InternalTransaction] = None
+    internal_txn: InternalTransaction | None = None
     status: str = "unmatched"  # matched, unmatched, discrepancy
     discrepancies: list[str] = field(default_factory=list)
 

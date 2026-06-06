@@ -1,11 +1,12 @@
 """Tests for Paymentology Companion API adapter."""
-import pytest
-import hmac
 import hashlib
-from datetime import datetime, timezone
+import hmac
+
+import pytest
+
 from src.paymentology.checksum import compute_checksum
-from src.paymentology.xmlrpc_builder import build_request, parse_response
 from src.paymentology.remote_handler import build_xml_response
+from src.paymentology.xmlrpc_builder import build_request, parse_response
 
 
 class TestChecksum:

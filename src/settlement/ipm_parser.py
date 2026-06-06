@@ -29,9 +29,7 @@ Key data elements for reconciliation:
 - DE50: Settlement Currency Code
 """
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -109,7 +107,7 @@ class IPMParser:
         if not filepath.exists():
             raise FileNotFoundError(f"IPM file not found: {filepath}")
         logger.info("Parsing IPM file: %s", filepath)
-        with open(filepath, "r", encoding="latin-1") as f:
+        with open(filepath, encoding="latin-1") as f:
             lines = f.readlines()
         return self.parse_lines(lines)
 
@@ -138,7 +136,7 @@ class IPMParser:
                      len(self.records), len(self.errors), len(lines))
         return self.records
 
-    def _parse_record(self, line: str, line_num: int) -> Optional[IPMRecord]:
+    def _parse_record(self, line: str, line_num: int) -> IPMRecord | None:
         mti = line[:4]
         if mti not in ("1240", "1442", "1740", "1644"):
             return None
