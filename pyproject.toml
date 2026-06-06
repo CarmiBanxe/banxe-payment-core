@@ -30,6 +30,18 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "--cov=src --cov-report=term-missing --cov-fail-under=80"
 
+[tool.coverage.run]
+# Contract-only port interfaces are pure ABCs (abstractmethod bodies are
+# docstrings/...) with no executable logic, so they are intentionally untested
+# and must not drag down total coverage. Exclude the port contracts and their
+# thin re-export packages; real adapters/implementations stay measured.
+omit = [
+    "src/*/*_port.py",
+    "src/wallet/__init__.py",
+    "src/partner/__init__.py",
+    "src/exchangeport/__init__.py",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
