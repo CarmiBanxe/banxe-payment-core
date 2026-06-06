@@ -1,0 +1,43 @@
+"""Partner port — abstract interface for external payment-partner operations (ADR-021)."""
+
+from .partner_port import (
+    Amount,
+    ComplianceBlock,
+    Currency,
+    Iban,
+    IdempotencyConflict,
+    InsufficientFunds,
+    MismatchDetail,
+    PartnerAccountId,
+    PartnerPort,
+    PartnerPortError,
+    PartnerType,
+    PartnerUnavailable,
+    PaymentInstruction,
+    PaymentResult,
+    PaymentStatus,
+    ReconcileResult,
+    UnknownPartnerState,
+    ValidationError,
+)
+
+__all__ = [
+    "PartnerPort",
+    "PartnerType",
+    "PaymentStatus",
+    "PartnerAccountId",
+    "PaymentInstruction",
+    "PaymentResult",
+    "MismatchDetail",
+    "ReconcileResult",
+    "Currency",
+    "Iban",
+    "Amount",
+    "PartnerPortError",
+    "ValidationError",
+    "IdempotencyConflict",
+    "PartnerUnavailable",
+    "InsufficientFunds",
+    "ComplianceBlock",
+    "UnknownPartnerState",
+]
