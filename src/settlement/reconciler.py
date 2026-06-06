@@ -3,9 +3,10 @@
 Compares Mastercard IPM file records with internal transaction records
 to identify: matched, unmatched, and discrepancies.
 """
+
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+
 from .ipm_parser import IPMRecord
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class InternalTransaction:
     """Internal transaction record from Hyperswitch/Paymentology."""
+
     txn_id: str
     pan_last4: str
     amount_cents: int
@@ -27,8 +29,9 @@ class InternalTransaction:
 @dataclass
 class ReconciliationResult:
     """Result of matching one IPM record."""
+
     ipm_record: IPMRecord
-    internal_txn: Optional[InternalTransaction] = None
+    internal_txn: InternalTransaction | None = None
     status: str = "unmatched"  # matched, unmatched, discrepancy
     discrepancies: list[str] = field(default_factory=list)
 
@@ -56,8 +59,12 @@ class Reconciler:
         matched = sum(1 for r in results if r.status == "matched")
         discrepancy = sum(1 for r in results if r.status == "discrepancy")
         unmatched = sum(1 for r in results if r.status == "unmatched")
-        logger.info("Reconciliation: %d matched, %d discrepancy, %d unmatched",
-                     matched, discrepancy, unmatched)
+        logger.info(
+            "Reconciliation: %d matched, %d discrepancy, %d unmatched",
+            matched,
+            discrepancy,
+            unmatched,
+        )
         return results
 
     def _build_index(self, txns: list[InternalTransaction]) -> dict:
@@ -87,15 +94,11 @@ class Reconciler:
         discrepancies = []
 
         if abs(ipm.de4_txn_amount - txn.amount_cents) > self.tolerance:
-            discrepancies.append(
-                f"amount: IPM={ipm.de4_txn_amount} vs internal={txn.amount_cents}"
-            )
+            discrepancies.append(f"amount: IPM={ipm.de4_txn_amount} vs internal={txn.amount_cents}")
 
         ipm_currency = ipm.currency_alpha
         if ipm_currency and ipm_currency != txn.currency:
-            discrepancies.append(
-                f"currency: IPM={ipm_currency} vs internal={txn.currency}"
-            )
+            discrepancies.append(f"currency: IPM={ipm_currency} vs internal={txn.currency}")
 
         status = "discrepancy" if discrepancies else "matched"
         return ReconciliationResult(
@@ -115,9 +118,8 @@ class Reconciler:
             "matched": len(matched),
             "unmatched": len(unmatched),
             "discrepancies": len(discrepancy),
-            "match_rate": f"{len(matched)/max(len(results),1)*100:.1f}%",
+            "match_rate": f"{len(matched) / max(len(results), 1) * 100:.1f}%",
             "discrepancy_details": [
-                {"line": r.ipm_record.line_number, "issues": r.discrepancies}
-                for r in discrepancy
+                {"line": r.ipm_record.line_number, "issues": r.discrepancies} for r in discrepancy
             ],
         }

@@ -1,11 +1,13 @@
 """Tests for Paymentology Companion API adapter."""
-import pytest
-import hmac
+
 import hashlib
-from datetime import datetime, timezone
+import hmac
+
+import pytest
+
 from src.paymentology.checksum import compute_checksum
-from src.paymentology.xmlrpc_builder import build_request, parse_response
 from src.paymentology.remote_handler import build_xml_response
+from src.paymentology.xmlrpc_builder import build_request, parse_response
 
 
 class TestChecksum:
@@ -40,18 +42,22 @@ class TestXmlRpcBuilder:
         assert "<int>42</int>" in xml
 
     def test_parse_response_success(self):
-        xml = ('<?xml version="1.0"?><methodResponse><params><param><value><struct>'
-               '<member><name>resultCode</name><value><int>1</int></value></member>'
-               '<member><name>cardNumber</name><value><string>4111222233334444</string></value></member>'
-               '</struct></value></param></params></methodResponse>')
+        xml = (
+            '<?xml version="1.0"?><methodResponse><params><param><value><struct>'
+            "<member><name>resultCode</name><value><int>1</int></value></member>"
+            "<member><name>cardNumber</name><value><string>4111222233334444</string></value></member>"
+            "</struct></value></param></params></methodResponse>"
+        )
         result = parse_response(xml)
         assert result["resultCode"] == 1
         assert result["cardNumber"] == "4111222233334444"
 
     def test_parse_response_fault(self):
-        xml = ('<methodResponse><fault><value><struct>'
-               '<member><name>faultCode</name><value><int>1</int></value></member>'
-               '</struct></value></fault></methodResponse>')
+        xml = (
+            "<methodResponse><fault><value><struct>"
+            "<member><name>faultCode</name><value><int>1</int></value></member>"
+            "</struct></value></fault></methodResponse>"
+        )
         result = parse_response(xml)
         assert result.get("error") is True
 
@@ -72,12 +78,21 @@ class TestRemoteHandler:
     @pytest.mark.asyncio
     async def test_dispatch_unknown_method(self):
         class MockProvider:
-            async def get_balance(self, ref): return 0
-            async def deduct(self, ref, amt, nar, tid): return False
-            async def reverse_deduct(self, ref, amt, tid): return False
+            async def get_balance(self, ref):
+                return 0
+
+            async def deduct(self, ref, amt, nar, tid):
+                return False
+
+            async def reverse_deduct(self, ref, amt, tid):
+                return False
+
         from src.paymentology.remote_handler import RemoteAPIHandler
+
         handler = RemoteAPIHandler(MockProvider(), "testpass")
-        xml = ('<?xml version="1.0"?><methodCall><methodName>UnknownMethod</methodName>'
-               '<params></params></methodCall>')
+        xml = (
+            '<?xml version="1.0"?><methodCall><methodName>UnknownMethod</methodName>'
+            "<params></params></methodCall>"
+        )
         result = await handler.dispatch(xml)
         assert "<int>0</int>" in result

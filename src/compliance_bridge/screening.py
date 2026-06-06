@@ -21,7 +21,8 @@ _CATEGORY_A = frozenset(["RU", "BY", "IR", "KP", "CU", "MM", "AF"])
 
 
 class ScreeningDecision(Enum):
-    PASS = "PASS"
+    # B105 false positive: enum decision label, not a credential.
+    PASS = "PASS"  # nosec B105
     BLOCK = "BLOCK"  # sanctions hit or Category A
     REVIEW = "REVIEW"  # manual review required
 
