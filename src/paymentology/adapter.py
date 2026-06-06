@@ -1,4 +1,5 @@
 """PaymentologyAdapter — Local API client for Companion API."""
+
 import logging
 import uuid
 from dataclasses import dataclass
@@ -80,43 +81,88 @@ class PaymentologyAdapter:
         tid = self._txn_id()
         tdate = self._now_iso()
         exp_str = expiry_date.strftime("%Y-%m-%dT00:00:00")
-        cs_params = [self.config.terminal_id, holder.reference, holder.first_name,
-                     holder.last_name, holder.id_or_passport, holder.cellphone_number,
-                     exp_str, tid, tdate]
+        cs_params = [
+            self.config.terminal_id,
+            holder.reference,
+            holder.first_name,
+            holder.last_name,
+            holder.id_or_passport,
+            holder.cellphone_number,
+            exp_str,
+            tid,
+            tdate,
+        ]
         cs = compute_checksum("CreateLinkedCard", cs_params, self.config.terminal_password)
-        params = [("string", self.config.terminal_id), ("string", holder.reference),
-                  ("string", holder.first_name), ("string", holder.last_name),
-                  ("string", holder.id_or_passport), ("string", holder.cellphone_number),
-                  ("dateTime.iso8601", exp_str), ("string", tid),
-                  ("dateTime.iso8601", tdate), ("string", cs)]
+        params = [
+            ("string", self.config.terminal_id),
+            ("string", holder.reference),
+            ("string", holder.first_name),
+            ("string", holder.last_name),
+            ("string", holder.id_or_passport),
+            ("string", holder.cellphone_number),
+            ("dateTime.iso8601", exp_str),
+            ("string", tid),
+            ("dateTime.iso8601", tdate),
+            ("string", cs),
+        ]
         result = await self._call("CreateLinkedCard", params)
         ok = result.get("resultCode") == 1
-        return CardResponse(success=ok, result_code=result.get("resultCode", -1),
-            result_text=result.get("resultText", ""), card_number=result.get("cardNumber", ""),
-            cvv2=result.get("cvv2", ""), valid_date=result.get("validDate", ""),
-            expiry_date=result.get("expiryDate", ""), tracking_number=result.get("trackingNumber", ""),
-            iv=result.get("IV", ""))
+        return CardResponse(
+            success=ok,
+            result_code=result.get("resultCode", -1),
+            result_text=result.get("resultText", ""),
+            card_number=result.get("cardNumber", ""),
+            cvv2=result.get("cvv2", ""),
+            valid_date=result.get("validDate", ""),
+            expiry_date=result.get("expiryDate", ""),
+            tracking_number=result.get("trackingNumber", ""),
+            iv=result.get("IV", ""),
+        )
 
     async def activate_card(self, card_number: str) -> dict:
         tid, tdate = self._txn_id(), self._now_iso()
-        cs = compute_checksum("ActivateCard", [self.config.terminal_id, card_number, tid, tdate],
-                              self.config.terminal_password)
-        params = [("string", self.config.terminal_id), ("string", card_number),
-                  ("string", tid), ("dateTime.iso8601", tdate), ("string", cs)]
+        cs = compute_checksum(
+            "ActivateCard",
+            [self.config.terminal_id, card_number, tid, tdate],
+            self.config.terminal_password,
+        )
+        params = [
+            ("string", self.config.terminal_id),
+            ("string", card_number),
+            ("string", tid),
+            ("dateTime.iso8601", tdate),
+            ("string", cs),
+        ]
         return await self._call("ActivateCard", params)
 
     async def stop_card(self, card_number: str) -> dict:
         tid, tdate = self._txn_id(), self._now_iso()
-        cs = compute_checksum("StopCard", [self.config.terminal_id, card_number, tid, tdate],
-                              self.config.terminal_password)
-        params = [("string", self.config.terminal_id), ("string", card_number),
-                  ("string", tid), ("dateTime.iso8601", tdate), ("string", cs)]
+        cs = compute_checksum(
+            "StopCard",
+            [self.config.terminal_id, card_number, tid, tdate],
+            self.config.terminal_password,
+        )
+        params = [
+            ("string", self.config.terminal_id),
+            ("string", card_number),
+            ("string", tid),
+            ("dateTime.iso8601", tdate),
+            ("string", cs),
+        ]
         return await self._call("StopCard", params)
 
     async def get_card_details(self, card_number: str) -> dict:
         tid, tdate = self._txn_id(), self._now_iso()
-        cs = compute_checksum("GetCardDetails", [self.config.terminal_id, card_number, tid, tdate],
-                              self.config.terminal_password)
-        params = [("string", self.config.terminal_id), ("string", card_number),
-                  ("string", tid), ("dateTime.iso8601", tdate), ("string", cs)]
+        cs = compute_checksum(
+            "GetCardDetails",
+            [self.config.terminal_id, card_number, tid, tdate],
+            self.config.terminal_password,
+        )
+        params = [
+            ("string", self.config.terminal_id),
+            ("string", card_number),
+            ("string", tid),
+            ("dateTime.iso8601", tdate),
+            ("string", cs),
+        ]
         return await self._call("GetCardDetails", params)

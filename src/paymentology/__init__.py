@@ -2,5 +2,11 @@ from .adapter import CardHolder, CardResponse, PaymentologyAdapter, Paymentology
 from .checksum import compute_checksum
 from .remote_handler import RemoteAPIHandler
 
-__all__ = ["PaymentologyAdapter", "PaymentologyConfig", "CardHolder",
-           "CardResponse", "RemoteAPIHandler", "compute_checksum"]
+__all__ = [
+    "PaymentologyAdapter",
+    "PaymentologyConfig",
+    "CardHolder",
+    "CardResponse",
+    "RemoteAPIHandler",
+    "compute_checksum",
+]

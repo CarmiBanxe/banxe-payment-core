@@ -21,6 +21,7 @@ from src.ports.payment_switch_port import PaymentRequest, PaymentStatus, Payment
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_async_client_mock(response_data: dict, *, status_code: int = 200):
     """Return a mock httpx.AsyncClient context manager with preset response."""
     mock_resp = MagicMock()
@@ -182,6 +183,7 @@ class TestMidazAdapter:
 # HyperswitchAdapter — HTTP methods (mocked)
 # ---------------------------------------------------------------------------
 
+
 class TestHyperswitchAdapterHTTP:
     def _adapter(self):
         return HyperswitchAdapter(base_url="http://localhost:8096", api_key="test_key")
@@ -190,7 +192,12 @@ class TestHyperswitchAdapterHTTP:
     async def test_authorize_returns_result(self):
         adapter = self._adapter()
         mock_client = _make_async_client_mock(
-            {"status": "requires_capture", "payment_id": "pay_001", "amount": 1000, "currency": "GBP"}
+            {
+                "status": "requires_capture",
+                "payment_id": "pay_001",
+                "amount": 1000,
+                "currency": "GBP",
+            }
         )
         with patch("src.adapters.hyperswitch_adapter.httpx.AsyncClient", return_value=mock_client):
             req = _make_payment_request()
@@ -224,7 +231,12 @@ class TestHyperswitchAdapterHTTP:
     async def test_refund_returns_refunded_status(self):
         adapter = self._adapter()
         mock_client = _make_async_client_mock(
-            {"refund_id": "ref_001", "connector_refund_id": "cnx_001", "amount": 500, "currency": "GBP"}
+            {
+                "refund_id": "ref_001",
+                "connector_refund_id": "cnx_001",
+                "amount": 500,
+                "currency": "GBP",
+            }
         )
         with patch("src.adapters.hyperswitch_adapter.httpx.AsyncClient", return_value=mock_client):
             result = await adapter.refund("pay_001", amount_minor=500, reason="customer_request")
@@ -272,6 +284,7 @@ class TestHyperswitchAdapterHTTP:
 # MidazAdapter — HTTP methods (mocked)
 # ---------------------------------------------------------------------------
 
+
 class TestMidazAdapterHTTP:
     def _adapter(self):
         return MidazAdapter(
@@ -284,9 +297,7 @@ class TestMidazAdapterHTTP:
     @pytest.mark.asyncio
     async def test_get_balance_returns_balance_result(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock(
-            {"balance": {"available": 50000, "onHold": 1000}}
-        )
+        mock_client = _make_async_client_mock({"balance": {"available": 50000, "onHold": 1000}})
         with patch("src.adapters.midaz_adapter.httpx.AsyncClient", return_value=mock_client):
             result = await adapter.get_balance("acc_001", "GBP")
         assert result.available_minor == 50000
@@ -372,6 +383,7 @@ class TestMidazAdapterHTTP:
 # PaymentologyAdapter — HTTP methods (mocked)
 # ---------------------------------------------------------------------------
 
+
 class TestPaymentologyAdapterHTTP:
     def _adapter(self):
         return PaymentologyAdapter(
@@ -382,14 +394,17 @@ class TestPaymentologyAdapterHTTP:
     @pytest.mark.asyncio
     async def test_issue_card_returns_card_result(self):
         from src.ports.issuer_port import CardIssueRequest, CardStatus
+
         adapter = self._adapter()
-        mock_client = _make_async_client_mock({
-            "cardId": "card_001",
-            "maskedPan": "****1234",
-            "status": "ACTIVE",
-            "expiryMonth": 12,
-            "expiryYear": 2028,
-        })
+        mock_client = _make_async_client_mock(
+            {
+                "cardId": "card_001",
+                "maskedPan": "****1234",
+                "status": "ACTIVE",
+                "expiryMonth": 12,
+                "expiryYear": 2028,
+            }
+        )
         with patch("src.adapters.paymentology_adapter.httpx.AsyncClient", return_value=mock_client):
             req = CardIssueRequest(
                 customer_id="cust_001",
@@ -406,6 +421,7 @@ class TestPaymentologyAdapterHTTP:
     @pytest.mark.asyncio
     async def test_suspend_card_returns_suspended_status(self):
         from src.ports.issuer_port import CardStatus
+
         adapter = self._adapter()
         mock_client = _make_async_client_mock({})
         with patch("src.adapters.paymentology_adapter.httpx.AsyncClient", return_value=mock_client):
@@ -415,6 +431,7 @@ class TestPaymentologyAdapterHTTP:
     @pytest.mark.asyncio
     async def test_cancel_card_returns_cancelled_status(self):
         from src.ports.issuer_port import CardStatus
+
         adapter = self._adapter()
         mock_client = _make_async_client_mock({})
         with patch("src.adapters.paymentology_adapter.httpx.AsyncClient", return_value=mock_client):
@@ -424,6 +441,7 @@ class TestPaymentologyAdapterHTTP:
     @pytest.mark.asyncio
     async def test_get_card_status_active(self):
         from src.ports.issuer_port import CardStatus
+
         adapter = self._adapter()
         mock_client = _make_async_client_mock({"status": "ACTIVE"})
         with patch("src.adapters.paymentology_adapter.httpx.AsyncClient", return_value=mock_client):
@@ -433,6 +451,7 @@ class TestPaymentologyAdapterHTTP:
     @pytest.mark.asyncio
     async def test_get_card_status_unknown_defaults_pending(self):
         from src.ports.issuer_port import CardStatus
+
         adapter = self._adapter()
         mock_client = _make_async_client_mock({"status": "UNKNOWN_STATUS"})
         with patch("src.adapters.paymentology_adapter.httpx.AsyncClient", return_value=mock_client):

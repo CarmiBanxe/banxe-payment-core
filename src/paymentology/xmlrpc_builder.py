@@ -1,4 +1,5 @@
 """XML-RPC request/response builder for Paymentology Companion API."""
+
 from typing import Any
 from xml.etree.ElementTree import Element, SubElement, fromstring, tostring
 

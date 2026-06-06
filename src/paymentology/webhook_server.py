@@ -1,4 +1,5 @@
 """FastAPI webhook server for Paymentology Remote API callbacks."""
+
 import logging
 
 from fastapi import FastAPI, Request, Response
@@ -23,10 +24,13 @@ async def paymentology_webhook(request: Request):
     xml_text = body.decode("utf-8")
     logger.info("Paymentology webhook received %d bytes", len(xml_text))
     if _handler is None:
-        return Response(content="<methodResponse><params><param><value><struct>"
+        return Response(
+            content="<methodResponse><params><param><value><struct>"
             "<member><name>resultCode</name><value><int>0</int></value></member>"
             "</struct></value></param></params></methodResponse>",
-            media_type="text/xml", status_code=200)
+            media_type="text/xml",
+            status_code=200,
+        )
     result_xml = await _handler.dispatch(xml_text)
     return Response(content=result_xml, media_type="text/xml", status_code=200)
 

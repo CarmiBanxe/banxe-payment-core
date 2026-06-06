@@ -1,4 +1,5 @@
 """Tests for Mastercard IPM Settlement parser and reconciler."""
+
 from src.settlement.ipm_parser import IPMParser, IPMRecord
 from src.settlement.reconciler import InternalTransaction, Reconciler, ReconciliationResult
 
@@ -74,32 +75,48 @@ class TestIPMParser:
 
 class TestReconciler:
     def test_match_by_approval_code(self):
-        ipm = IPMRecord(mti="1240", de2_pan="5412345678901234",
-                        de4_txn_amount=10000, de38_approval_code="ABC123",
-                        de49_txn_currency="826")
-        txn = InternalTransaction(txn_id="t1", pan_last4="1234",
-                                  amount_cents=10000, currency="GBP",
-                                  approval_code="ABC123")
+        ipm = IPMRecord(
+            mti="1240",
+            de2_pan="5412345678901234",
+            de4_txn_amount=10000,
+            de38_approval_code="ABC123",
+            de49_txn_currency="826",
+        )
+        txn = InternalTransaction(
+            txn_id="t1",
+            pan_last4="1234",
+            amount_cents=10000,
+            currency="GBP",
+            approval_code="ABC123",
+        )
         rec = Reconciler()
         results = rec.reconcile([ipm], [txn])
         assert len(results) == 1
         assert results[0].status == "matched"
 
     def test_unmatched(self):
-        ipm = IPMRecord(mti="1240", de2_pan="5412345678901234",
-                        de4_txn_amount=10000, de38_approval_code="XYZ999",
-                        de49_txn_currency="826")
+        ipm = IPMRecord(
+            mti="1240",
+            de2_pan="5412345678901234",
+            de4_txn_amount=10000,
+            de38_approval_code="XYZ999",
+            de49_txn_currency="826",
+        )
         rec = Reconciler()
         results = rec.reconcile([ipm], [])
         assert results[0].status == "unmatched"
 
     def test_amount_discrepancy(self):
-        ipm = IPMRecord(mti="1240", de2_pan="5412345678901234",
-                        de4_txn_amount=10000, de38_approval_code="ABC123",
-                        de49_txn_currency="826")
-        txn = InternalTransaction(txn_id="t1", pan_last4="1234",
-                                  amount_cents=9500, currency="GBP",
-                                  approval_code="ABC123")
+        ipm = IPMRecord(
+            mti="1240",
+            de2_pan="5412345678901234",
+            de4_txn_amount=10000,
+            de38_approval_code="ABC123",
+            de49_txn_currency="826",
+        )
+        txn = InternalTransaction(
+            txn_id="t1", pan_last4="1234", amount_cents=9500, currency="GBP", approval_code="ABC123"
+        )
         rec = Reconciler()
         results = rec.reconcile([ipm], [txn])
         assert results[0].status == "discrepancy"
@@ -108,8 +125,9 @@ class TestReconciler:
     def test_summary(self):
         r1 = ReconciliationResult(ipm_record=IPMRecord(), status="matched")
         r2 = ReconciliationResult(ipm_record=IPMRecord(), status="unmatched")
-        r3 = ReconciliationResult(ipm_record=IPMRecord(), status="discrepancy",
-                                  discrepancies=["amount mismatch"])
+        r3 = ReconciliationResult(
+            ipm_record=IPMRecord(), status="discrepancy", discrepancies=["amount mismatch"]
+        )
         s = Reconciler.summary([r1, r2, r3])
         assert s["matched"] == 1
         assert s["unmatched"] == 1
