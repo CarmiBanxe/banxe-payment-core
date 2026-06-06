@@ -21,13 +21,14 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 Currency = str  # ISO 4217, e.g. "EUR"
-Iban = str      # IBAN string, e.g. "GB29NWBK60161331926819"
-Amount = str    # Decimal string, NEVER float, e.g. "100.00"
+Iban = str  # IBAN string, e.g. "GB29NWBK60161331926819"
+Amount = str  # Decimal string, NEVER float, e.g. "100.00"
 
 
 # ---------------------------------------------------------------------------
 # Enumerations
 # ---------------------------------------------------------------------------
+
 
 class PartnerType(StrEnum):
     OPEN_BANKING = "open_banking"
@@ -47,6 +48,7 @@ class PaymentStatus(StrEnum):
 # ---------------------------------------------------------------------------
 # Value types (dataclasses)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class PartnerAccountId:
@@ -92,6 +94,7 @@ class ReconcileResult:
 # ---------------------------------------------------------------------------
 # Error taxonomy
 # ---------------------------------------------------------------------------
+
 
 class PartnerPortError(Exception):
     """Base error for all PartnerPort operations.
@@ -144,6 +147,7 @@ class UnknownPartnerState(PartnerPortError):
 # ---------------------------------------------------------------------------
 # Abstract port
 # ---------------------------------------------------------------------------
+
 
 class PartnerPort(abc.ABC):
     """Abstract port for external payment-partner operations (ADR-021, ADR-027,
