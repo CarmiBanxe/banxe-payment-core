@@ -1,7 +1,9 @@
 """XML-RPC request/response builder for Paymentology Companion API."""
 
 from typing import Any
-from xml.etree.ElementTree import Element, SubElement, fromstring, tostring
+from xml.etree.ElementTree import Element, SubElement, tostring  # generation only; parsing uses defusedxml  # nosec B405
+
+from defusedxml.ElementTree import fromstring
 
 
 def build_request(method_name: str, params: list[tuple[str, Any]]) -> str:

@@ -91,7 +91,7 @@ class RemoteAPIHandler:
         return build_xml_response(1 if ok else 0)
 
     async def dispatch(self, xml_body: str) -> str:
-        from xml.etree.ElementTree import fromstring
+        from defusedxml.ElementTree import fromstring
 
         root = fromstring(xml_body)
         method = root.find("methodName").text
