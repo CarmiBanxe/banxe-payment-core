@@ -1,7 +1,11 @@
 """XML-RPC request/response builder for Paymentology Companion API."""
 
 from typing import Any
-from xml.etree.ElementTree import Element, SubElement, tostring  # generation only; parsing uses defusedxml  # nosec B405
+from xml.etree.ElementTree import (  # generation only; parsing uses defusedxml  # nosec B405
+    Element,
+    SubElement,
+    tostring,
+)
 
 from defusedxml.ElementTree import fromstring
 

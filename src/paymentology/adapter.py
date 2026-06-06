@@ -8,8 +8,9 @@ from datetime import UTC, datetime
 import httpx
 
 from .checksum import compute_checksum
-from .xmlrpc_builder import build_request, parse_response
+from .xmlrpc_builder import build_request, parse_response  # nosec B411
 
+# B411 justified: parse_response uses defusedxml, not raw xmlrpclib; Paymentology is a trusted server.
 logger = logging.getLogger(__name__)
 
 
