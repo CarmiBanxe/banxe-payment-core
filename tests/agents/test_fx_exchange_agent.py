@@ -50,9 +50,7 @@ class FakeRecorder(DecisionRecorder):
 
 
 class FakeExchangePort(ExchangePort):
-    def __init__(
-        self, quote: RateQuote | None = None, raises: Exception | None = None
-    ) -> None:
+    def __init__(self, quote: RateQuote | None = None, raises: Exception | None = None) -> None:
         self._quote = quote or RateQuote(
             base_asset="BTC",
             quote_asset="EUR",
