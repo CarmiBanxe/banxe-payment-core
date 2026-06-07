@@ -9,21 +9,24 @@ does NOT implement the ports, the LLM-orchestration/routing layer
 (``AGENT_ROUTING_ENABLED`` stays out of scope — Terminal A infra, ADR-049
 §D6/§D7), or the ClickHouse sink.
 
-INCREMENT 1 — AUTO read/quote path ONLY (``ExchangePort.get_rate``); NO money
-movement. ``place_order`` / ``cancel_order``, the REVIEW flow, biometric
-step-up execution, and the ``WalletPort`` settlement leg are DEFERRED to
-increment 2 (see the TODO markers below).
+Two contours share one governance engine: the AUTO read/quote path
+(``ExchangePort.get_rate``, increment 1) and the money-movement path
+(``ExchangePort.place_order`` / ``ExchangePort.cancel_order`` with the
+``WalletPort`` settlement leg, increment 2). Both traverse the identical §D2
+gate chain; money movement is REVIEW-biased and adds biometric step-up.
 
 The FX mask (ADR-049 §D3) enforced here, in §D2 chain order:
 
-* ``scope``                — ExchangePort (+ WalletPort, increment 2) operations
-                             on an allow-list; both ports are injected, never
-                             implemented here. An op not on the allow-list is rejected.
-* ``autonomy_level``       — AUTO-biased for the read/quote path (ADR-049 §D3);
-                             money movement is REVIEW-biased in increment 2.
+* ``scope``                — ExchangePort + WalletPort operations on an allow-list;
+                             both ports are injected, never implemented here. An op
+                             not on the allow-list is rejected.
+* ``autonomy_level``       — AUTO-biased for the read/quote path; money movement is
+                             REVIEW-biased and step-up-gated (ADR-049 §D3/§D4).
 * ``confirmation_policy``  — AUTO > 0.90 / REVIEW 0.70–0.90 / BLOCK < 0.70
-                             (ADR-047 thresholds, ADR-049 §D4). In increment 1
-                             only the AUTO band executes; below AUTO halts.
+                             (ADR-047 thresholds, ADR-049 §D4). A read below AUTO
+                             halts (re-quote); a money movement in the REVIEW band
+                             holds for HITL and proceeds only once a human reviewer
+                             is supplied (mirrors PaymentsAgent).
 * ``cost_cap``             — per-request AND per-window hard caps, token AND
                              monetary (Decimal) dimensions (ADR-047 §D2, ADR-049 §D3).
 * ``lineage_obligation``   — one ``AgentDecisionRecord`` per action (ADR-046), non-optional.
@@ -46,14 +49,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
+from functools import partial
 
 from src.exchangeport.exchange_port import (
     AssetSymbol,
     ComplianceBlock,
     ExchangePort,
     ExchangePortError,
+    OrderRequest,
+    OrderResult,
+    OrderState,
 )
-from src.wallet.wallet_port import WalletPort
+from src.wallet.wallet_port import ChainId, SeedMaterial, SignedTx, WalletPort
 
 # ---------------------------------------------------------------------------
 # Mask vocabulary
@@ -87,7 +94,7 @@ class BudgetBreach(StrEnum):
 
 class AutonomyLevel(StrEnum):
     """Mask autonomy posture (ADR-049 §D3). Read/quote is AUTO-biased; money
-    movement is REVIEW-biased (increment 2)."""
+    movement is REVIEW-biased."""
 
     AUTO_BIASED = "auto_biased"
     REVIEW_BIASED = "review_biased"
@@ -156,9 +163,14 @@ class FXExchangeMask:
     agent_id: str = "fx_exchange_agent"
 
     # The mask scope (ADR-049 §D3 allow-list): the only ports this mask may reach.
-    # Increment 1 exposes the read/quote op only; the settlement + order ops are
-    # DEFERRED to increment 2.
-    scope: tuple[str, ...] = ("ExchangePort.get_rate",)
+    # The read/quote op, the two order ops, and the WalletPort settlement leg used
+    # to deliver a filled order's asset to custody.
+    scope: tuple[str, ...] = (
+        "ExchangePort.get_rate",
+        "ExchangePort.place_order",
+        "ExchangePort.cancel_order",
+        "WalletPort.sign_tx",
+    )
 
     # L3 compliance contour required before any exchange action (Ruflo mandatory).
     compliance_gate: tuple[str, ...] = ("AML", "SANCTIONS", "TRAVEL_RULE")
@@ -176,6 +188,57 @@ class RateQuoteIntent:
     correlation_id: str
     confidence_score: float
     request_cost: RequestCost
+
+
+@dataclass(frozen=True)
+class SettlementInstruction:
+    """Inputs for the WalletPort settlement leg of a FILLED order (ADR-021).
+
+    The settlement leg signs the on-chain transfer that delivers a filled order's
+    bought asset to the client custody address. ``seed`` is handed straight to the
+    injected WalletPort custody adapter (the custody boundary) and is NEVER logged
+    nor written to the lineage record (R-SEC-NEW-01 / ADR-046)."""
+
+    chain: ChainId
+    seed: SeedMaterial
+    derivation_path: str
+    tx_payload: object
+
+
+@dataclass
+class OrderIntent:
+    """A resolved money-movement intent: place an exchange order under the FX mask.
+
+    Carries the ADR-048 ``process_ref``, the idempotent ``OrderRequest`` (keyed on
+    ``client_order_id``), the confidence the confirmation_policy bands on, the
+    biometric step-up flag, and the optional WalletPort settlement instruction
+    applied when the order fills (ADR-049 §D4)."""
+
+    intent_text: str
+    process_ref: ProcessRef
+    order: OrderRequest
+    correlation_id: str
+    confidence_score: float
+    request_cost: RequestCost
+    biometric_verified: bool = False
+    settlement: SettlementInstruction | None = None
+
+
+@dataclass
+class CancelOrderIntent:
+    """A resolved intent to cancel an open exchange order (ExchangePort.cancel_order).
+
+    Cancellation reduces exposure rather than moving client funds, so it is not a
+    critical money movement (no biometric step-up); it still traverses the full §D2
+    gate chain and is HITL-eligible in the REVIEW band (ADR-049 §D4)."""
+
+    intent_text: str
+    process_ref: ProcessRef
+    order_id: str
+    correlation_id: str
+    confidence_score: float
+    request_cost: RequestCost
+    biometric_verified: bool = False
 
 
 @dataclass
@@ -250,6 +313,9 @@ class _ActionContext:
     amount: Decimal | None
     biometric_verified: bool
     human_reviewed_by: str | None
+    # Money-movement actions hold for HITL in the REVIEW band; reads (AUTO-biased)
+    # instead halt below AUTO. Defaults False so the read/quote path is unchanged.
+    supports_review_hitl: bool = False
 
 
 @dataclass
@@ -276,8 +342,8 @@ class FXExchangeAgent:
 
     Ports and the lineage recorder are injected as interfaces (constructor
     injection); the agent contains pure governance logic and is unit-testable
-    without any live infra. ``wallet_port`` is injected for the increment-2
-    settlement leg and is intentionally unused on the increment-1 read path.
+    without any live infra. ``wallet_port`` drives the settlement leg of a filled
+    order and is held only as the injected interface, never implemented here.
     """
 
     def __init__(
@@ -290,10 +356,14 @@ class FXExchangeAgent:
         cost_window: CostWindow | None = None,
     ) -> None:
         self._exchange = exchange_port
-        self._wallet = wallet_port  # TODO(increment 2): settlement leg via WalletPort.
+        self._wallet = wallet_port
         self._recorder = recorder
         self._mask = mask
         self._window = cost_window or CostWindow(window_ref=f"{mask.agent_id}:default")
+        # Agent-level idempotency on client_order_id: a replay returns the recorded
+        # outcome without re-placing or re-emitting (ExchangePort.place_order is also
+        # idempotent at the adapter layer — ADR-021). Only executed orders are cached.
+        self._placed: dict[str, AgentOutcome] = {}
 
     # -- public mask actions -------------------------------------------------
 
@@ -324,11 +394,88 @@ class FXExchangeAgent:
             ctx, lambda: self._exchange.get_rate(intent.base_asset, intent.quote_asset)
         )
 
-    # TODO(increment 2): place_order — money movement, REVIEW-biased band, biometric
-    #   step-up execution, idempotent on client_order_id (ExchangePort §place_order).
-    # TODO(increment 2): cancel_order — idempotent cancellation (ExchangePort §cancel_order).
-    # TODO(increment 2): the REVIEW flow (HITL hold/approve) for below-AUTO bands.
-    # TODO(increment 2): WalletPort settlement leg for filled orders.
+    async def place_order(
+        self,
+        intent: OrderIntent,
+        *,
+        compliance_result: ComplianceResult = ComplianceResult.PASS,
+        human_reviewed_by: str | None = None,
+    ) -> AgentOutcome:
+        """Place an exchange order — critical money movement, REVIEW-biased band.
+
+        Enforces the full §D2 gate chain; requires biometric step-up regardless of
+        confidence band (ADR-049 §D4). Idempotent on ``order.client_order_id``: a
+        replay of an already-placed order returns the recorded outcome without
+        re-calling the port. A FILLED order triggers the WalletPort settlement leg.
+        """
+        cached = self._placed.get(intent.order.client_order_id)
+        if cached is not None:
+            return cached
+        ctx = _ActionContext(
+            intent_text=intent.intent_text,
+            process_ref=intent.process_ref,
+            correlation_id=intent.correlation_id,
+            confidence_score=intent.confidence_score,
+            triggering_event=f"order_intent:{intent.order.client_order_id}",
+            success_action="PLACE_ORDER",
+            op="ExchangePort.place_order",
+            request_cost=intent.request_cost,
+            compliance_result=compliance_result,
+            is_money_movement=True,
+            amount=Decimal(intent.order.amount),
+            biometric_verified=intent.biometric_verified,
+            human_reviewed_by=human_reviewed_by,
+            supports_review_hitl=True,
+        )
+        settle = partial(self._settle, intent.settlement) if intent.settlement else None
+        outcome = await self._run_action(
+            ctx, lambda: self._exchange.place_order(intent.order), settle=settle
+        )
+        if outcome.executed:
+            self._placed[intent.order.client_order_id] = outcome
+        return outcome
+
+    async def cancel_order(
+        self,
+        intent: CancelOrderIntent,
+        *,
+        compliance_result: ComplianceResult = ComplianceResult.PASS,
+        human_reviewed_by: str | None = None,
+    ) -> AgentOutcome:
+        """Cancel an open exchange order via ``ExchangePort.cancel_order``.
+
+        Idempotent at the port: cancelling an order already in a final state returns
+        ``False`` without raising. Traverses the full §D2 gate chain and is
+        HITL-eligible in the REVIEW band; not a critical money movement, so no
+        biometric step-up (ADR-049 §D4)."""
+        ctx = _ActionContext(
+            intent_text=intent.intent_text,
+            process_ref=intent.process_ref,
+            correlation_id=intent.correlation_id,
+            confidence_score=intent.confidence_score,
+            triggering_event=f"cancel_order:{intent.order_id}",
+            success_action="CANCEL_ORDER",
+            op="ExchangePort.cancel_order",
+            request_cost=intent.request_cost,
+            compliance_result=compliance_result,
+            is_money_movement=False,
+            amount=None,
+            biometric_verified=intent.biometric_verified,
+            human_reviewed_by=human_reviewed_by,
+            supports_review_hitl=True,
+        )
+        return await self._run_action(ctx, lambda: self._exchange.cancel_order(intent.order_id))
+
+    async def _settle(self, settlement: SettlementInstruction, result: OrderResult) -> SignedTx:
+        """WalletPort settlement leg for a FILLED order (ADR-021): sign the on-chain
+        transfer that delivers the bought asset to custody. ``seed`` goes only to the
+        injected custody adapter and is never logged nor recorded (R-SEC-NEW-01)."""
+        return await self._wallet.sign_tx(
+            settlement.seed,
+            settlement.chain,
+            settlement.derivation_path,
+            settlement.tx_payload,
+        )
 
     # -- governance engine ---------------------------------------------------
 
@@ -403,17 +550,34 @@ class FXExchangeAgent:
                 requires_hitl=True,
             )
         if band is ConfirmationDecision.REVIEW:
-            return _Evaluation(
-                band,
-                False,
-                "HALT_REVIEW_DEFERRED",
-                "Confidence in REVIEW band; REVIEW flow is deferred to increment 2 (ADR-049 §D4).",
-                policies,
-                ctx.compliance_result,
-                BudgetBreach.NONE,
-                halt_reason="review_deferred",
-                requires_hitl=True,
-            )
+            # Read/quote path: reads are AUTO-only under this AUTO-biased mask, so a
+            # below-AUTO read halts (re-quote at higher confidence), not a HITL hold.
+            if not ctx.supports_review_hitl:
+                return _Evaluation(
+                    band,
+                    False,
+                    "HALT_REVIEW_DEFERRED",
+                    "Read intent below AUTO band; reads are AUTO-only, no HITL hold (ADR-049 §D3).",
+                    policies,
+                    ctx.compliance_result,
+                    BudgetBreach.NONE,
+                    halt_reason="review_deferred",
+                    requires_hitl=True,
+                )
+            # Money-movement path: REVIEW band holds for HITL and proceeds only once a
+            # human reviewer is supplied (mirrors PaymentsAgent, ADR-049 §D4).
+            if ctx.human_reviewed_by is None:
+                return _Evaluation(
+                    band,
+                    False,
+                    "HOLD_FOR_REVIEW",
+                    "Confidence in REVIEW band: paused for HITL; escalates to BLOCK on no response.",
+                    policies,
+                    ctx.compliance_result,
+                    BudgetBreach.NONE,
+                    halt_reason="hitl_review_required",
+                    requires_hitl=True,
+                )
 
         # 4. ADR-047 — hard cost cap (per-request AND per-window).
         policies.append("ADR-047-cost-cap")
@@ -444,8 +608,9 @@ class FXExchangeAgent:
                 requires_hitl=True,
             )
 
-        # 6. ADR-049 §D4 — biometric step-up for critical money movement. The read/
-        #    quote path is never money movement, so this never trips in increment 1.
+        # 6. ADR-049 §D4 — biometric step-up for critical money movement, mandatory
+        #    regardless of confidence band. The read/quote path is never money
+        #    movement, so this gate trips only for place_order.
         if self._step_up_required(ctx) and not ctx.biometric_verified:
             policies.append("ADR-049-D4-biometric-step-up")
             return _Evaluation(
@@ -461,18 +626,25 @@ class FXExchangeAgent:
             )
 
         # All gates satisfied — clear to call the port.
+        reviewer = (
+            "" if ctx.human_reviewed_by is None else f" (reviewed by {ctx.human_reviewed_by})"
+        )
         return _Evaluation(
             band,
             True,
             ctx.success_action,
-            f"All mask gates satisfied at {band.value} confidence; executing within scope.",
+            f"All mask gates satisfied at {band.value} confidence{reviewer}; executing within scope.",
             policies,
             ctx.compliance_result,
             BudgetBreach.NONE,
         )
 
     async def _run_action(
-        self, ctx: _ActionContext, port_call: Callable[[], Awaitable[object]]
+        self,
+        ctx: _ActionContext,
+        port_call: Callable[[], Awaitable[object]],
+        *,
+        settle: Callable[[OrderResult], Awaitable[SignedTx]] | None = None,
     ) -> AgentOutcome:
         ev = self._evaluate(ctx)
         result: object | None = None
@@ -498,6 +670,27 @@ class FXExchangeAgent:
                 raise
             executed = True
             self._window.add(ctx.request_cost)
+            # WalletPort settlement leg (ADR-021): only a FILLED order settles. The
+            # whole place_order action still owes exactly one lineage record, so a
+            # settlement failure is recorded here and re-raised (never a silent gap).
+            if (
+                settle is not None
+                and isinstance(result, OrderResult)
+                and result.state is OrderState.FILLED
+            ):
+                try:
+                    await settle(result)
+                except Exception as exc:  # noqa: BLE001 — re-raised after recording lineage
+                    action_taken = f"HALT_SETTLEMENT_ERROR:{type(exc).__name__}"
+                    await self._emit(
+                        ctx,
+                        ev,
+                        action_taken,
+                        executed=True,
+                        compliance_result=compliance_result,
+                        reasoning=f"Order placed but WalletPort settlement leg failed: {exc}",
+                    )
+                    raise
 
         record = await self._emit(
             ctx,
@@ -554,6 +747,7 @@ __all__ = [
     "AgentOutcome",
     "AutonomyLevel",
     "BudgetBreach",
+    "CancelOrderIntent",
     "ComplianceResult",
     "ConfirmationDecision",
     "CostCap",
@@ -561,7 +755,9 @@ __all__ = [
     "DecisionRecorder",
     "FXExchangeAgent",
     "FXExchangeMask",
+    "OrderIntent",
     "ProcessRef",
     "RateQuoteIntent",
     "RequestCost",
+    "SettlementInstruction",
 ]
