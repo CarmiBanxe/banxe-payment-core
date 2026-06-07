@@ -2,10 +2,11 @@
 
 Public surface for the Payments and Wallet mask agents. Live LLM routing / agent
 dispatch (``AGENT_ROUTING_ENABLED``) is out of scope here — Terminal A infra
-(ADR-049 §D6/§D7). Each mask module defines its own intent vocabulary and
-governance dataclasses (``ProcessRef``, ``CostCap``, ``AgentDecisionRecord``, …)
-so it stays self-contained; the names below re-export the shared Payments surface
-plus the Wallet-specific intents.
+(ADR-049 §D6/§D7). The shared lineage/cost primitives (``ProcessRef``,
+``CostCap``, ``CostWindow``, ``AgentDecisionRecord``, ``DecisionRecorder``, …)
+live in the canonical ``src/agents/_lineage.py`` module; each mask module imports
+them and adds its own intent vocabulary. The names below re-export the shared
+Payments surface plus the Wallet-specific intents.
 """
 
 from src.agents.payments_agent import (
