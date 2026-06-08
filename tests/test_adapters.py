@@ -8,6 +8,7 @@ Adapters require external services (Sprint 9/10) — we test:
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from src.adapters.hyperswitch_adapter import HyperswitchAdapter
@@ -35,6 +36,40 @@ def _make_async_client_mock(response_data: dict, *, status_code: int = 200):
     mock_client.post.return_value = mock_resp
     mock_client.get.return_value = mock_resp
     mock_client.patch.return_value = mock_resp
+    return mock_client
+
+
+def _make_strict_async_client_mock(
+    response_data: dict, *, status_code: int = 200, raise_error: bool = False
+):
+    """Return a *strictly* mocked httpx.AsyncClient whose verbs are AsyncMock.
+
+    Unlike _make_async_client_mock, post/get/patch are AsyncMock — so a caller
+    that forgets `await` gets back a coroutine (not the response) and blows up on
+    resp.raise_for_status(). The lenient helper used plain MagicMock for the
+    verbs, which silently hid the missing-await bug (see fix/hyperswitch-missing-await).
+
+    raise_error=True makes resp.raise_for_status() raise httpx.HTTPStatusError,
+    so error-status handling can be asserted.
+    """
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = response_data
+    mock_resp.status_code = status_code
+    if raise_error:
+        request = httpx.Request("POST", "http://test")
+        response = httpx.Response(status_code, request=request)
+        mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "error", request=request, response=response
+        )
+    else:
+        mock_resp.raise_for_status.return_value = None
+
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.post = AsyncMock(return_value=mock_resp)
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.patch = AsyncMock(return_value=mock_resp)
     return mock_client
 
 
@@ -185,13 +220,22 @@ class TestMidazAdapter:
 
 
 class TestHyperswitchAdapterHTTP:
+    """HTTP-path tests using the STRICT AsyncMock helper.
+
+    These use _make_strict_async_client_mock so that a missing `await` on the
+    httpx call surfaces (resp would be a coroutine and raise_for_status() would
+    fail) instead of being silently swallowed. Each happy-path test also asserts
+    the verb was *awaited* (assert_awaited_once), and each method has an
+    error-status test asserting the HTTPStatusError propagates.
+    """
+
     def _adapter(self):
         return HyperswitchAdapter(base_url="http://localhost:8096", api_key="test_key")
 
     @pytest.mark.asyncio
     async def test_authorize_returns_result(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock(
+        mock_client = _make_strict_async_client_mock(
             {
                 "status": "requires_capture",
                 "payment_id": "pay_001",
@@ -202,35 +246,58 @@ class TestHyperswitchAdapterHTTP:
         with patch("src.adapters.hyperswitch_adapter.httpx.AsyncClient", return_value=mock_client):
             req = _make_payment_request()
             result = await adapter.authorize(req)
+        mock_client.post.assert_awaited_once()
         assert result.status == PaymentStatus.AUTHORIZED
         assert result.transaction_id == "pay_001"
         assert result.amount_minor == 1000
 
     @pytest.mark.asyncio
+    async def test_authorize_raises_on_error_status(self):
+        adapter = self._adapter()
+        mock_client = _make_strict_async_client_mock({}, status_code=502, raise_error=True)
+        with (
+            patch("src.adapters.hyperswitch_adapter.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await adapter.authorize(_make_payment_request())
+
+    @pytest.mark.asyncio
     async def test_capture_returns_result(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock(
+        mock_client = _make_strict_async_client_mock(
             {"status": "succeeded", "payment_id": "pay_002", "amount": 1000, "currency": "GBP"}
         )
         with patch("src.adapters.hyperswitch_adapter.httpx.AsyncClient", return_value=mock_client):
             result = await adapter.capture("pay_002", amount_minor=1000)
+        mock_client.post.assert_awaited_once()
         assert result.status == PaymentStatus.CAPTURED
         assert result.transaction_id == "pay_002"
 
     @pytest.mark.asyncio
     async def test_capture_without_amount(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock(
+        mock_client = _make_strict_async_client_mock(
             {"status": "succeeded", "payment_id": "pay_003", "amount": 500, "currency": "EUR"}
         )
         with patch("src.adapters.hyperswitch_adapter.httpx.AsyncClient", return_value=mock_client):
             result = await adapter.capture("pay_003")
+        mock_client.post.assert_awaited_once()
         assert result.status == PaymentStatus.CAPTURED
+
+    @pytest.mark.asyncio
+    async def test_capture_raises_on_error_status(self):
+        adapter = self._adapter()
+        mock_client = _make_strict_async_client_mock({}, status_code=500, raise_error=True)
+        with (
+            patch("src.adapters.hyperswitch_adapter.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await adapter.capture("pay_002", amount_minor=1000)
 
     @pytest.mark.asyncio
     async def test_refund_returns_refunded_status(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock(
+        mock_client = _make_strict_async_client_mock(
             {
                 "refund_id": "ref_001",
                 "connector_refund_id": "cnx_001",
@@ -240,6 +307,7 @@ class TestHyperswitchAdapterHTTP:
         )
         with patch("src.adapters.hyperswitch_adapter.httpx.AsyncClient", return_value=mock_client):
             result = await adapter.refund("pay_001", amount_minor=500, reason="customer_request")
+        mock_client.post.assert_awaited_once()
         assert result.status == PaymentStatus.REFUNDED
         assert result.transaction_id == "ref_001"
         assert result.amount_minor == 500
@@ -247,31 +315,64 @@ class TestHyperswitchAdapterHTTP:
     @pytest.mark.asyncio
     async def test_refund_fallback_transaction_id(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock({"amount": 200, "currency": "GBP"})
+        mock_client = _make_strict_async_client_mock({"amount": 200, "currency": "GBP"})
         with patch("src.adapters.hyperswitch_adapter.httpx.AsyncClient", return_value=mock_client):
             result = await adapter.refund("pay_x", amount_minor=200, reason="duplicate")
+        mock_client.post.assert_awaited_once()
         assert result.transaction_id == "pay_x"
+
+    @pytest.mark.asyncio
+    async def test_refund_raises_on_error_status(self):
+        adapter = self._adapter()
+        mock_client = _make_strict_async_client_mock({}, status_code=422, raise_error=True)
+        with (
+            patch("src.adapters.hyperswitch_adapter.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await adapter.refund("pay_001", amount_minor=500, reason="customer_request")
 
     @pytest.mark.asyncio
     async def test_void_returns_voided_status(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock(
+        mock_client = _make_strict_async_client_mock(
             {"status": "cancelled", "payment_id": "pay_004", "amount": 0, "currency": "GBP"}
         )
         with patch("src.adapters.hyperswitch_adapter.httpx.AsyncClient", return_value=mock_client):
             result = await adapter.void("pay_004")
+        mock_client.post.assert_awaited_once()
         assert result.status == PaymentStatus.VOIDED
+
+    @pytest.mark.asyncio
+    async def test_void_raises_on_error_status(self):
+        adapter = self._adapter()
+        mock_client = _make_strict_async_client_mock({}, status_code=409, raise_error=True)
+        with (
+            patch("src.adapters.hyperswitch_adapter.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await adapter.void("pay_004")
 
     @pytest.mark.asyncio
     async def test_get_payment_status(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock(
+        mock_client = _make_strict_async_client_mock(
             {"status": "succeeded", "payment_id": "pay_005", "amount": 750, "currency": "USD"}
         )
         with patch("src.adapters.hyperswitch_adapter.httpx.AsyncClient", return_value=mock_client):
             result = await adapter.get_payment_status("pay_005")
+        mock_client.get.assert_awaited_once()
         assert result.status == PaymentStatus.CAPTURED
         assert result.currency == "USD"
+
+    @pytest.mark.asyncio
+    async def test_get_payment_status_raises_on_error_status(self):
+        adapter = self._adapter()
+        mock_client = _make_strict_async_client_mock({}, status_code=404, raise_error=True)
+        with (
+            patch("src.adapters.hyperswitch_adapter.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await adapter.get_payment_status("pay_005")
 
     def test_headers_include_api_key(self):
         adapter = self._adapter()
