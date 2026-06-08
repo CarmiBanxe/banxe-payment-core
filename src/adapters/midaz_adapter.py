@@ -65,7 +65,7 @@ class MidazAdapter(LedgerPort):
 
     async def get_balance(self, account_id: str, currency: str) -> BalanceResult:
         async with httpx.AsyncClient(headers=self._headers) as client:
-            resp = client.get(self._accounts_url(account_id))
+            resp = await client.get(self._accounts_url(account_id))
             resp.raise_for_status()
             data = resp.json()
         balance = data.get("balance", {})
@@ -87,7 +87,7 @@ class MidazAdapter(LedgerPort):
 
     async def release_reservation(self, reservation_id: str) -> None:
         async with httpx.AsyncClient(headers=self._headers) as client:
-            resp = client.patch(
+            resp = await client.patch(
                 f"{self._transactions_url()}/{reservation_id}",
                 json={"status": "RELEASED"},
             )
@@ -100,7 +100,7 @@ class MidazAdapter(LedgerPort):
         if actual_amount_minor is not None:
             payload["amount"] = actual_amount_minor
         async with httpx.AsyncClient(headers=self._headers) as client:
-            resp = client.patch(f"{self._transactions_url()}/{reservation_id}", json=payload)
+            resp = await client.patch(f"{self._transactions_url()}/{reservation_id}", json=payload)
             resp.raise_for_status()
             data = resp.json()
         return data.get("id", reservation_id)
@@ -123,7 +123,7 @@ class MidazAdapter(LedgerPort):
             ],
         }
         async with httpx.AsyncClient(headers=self._headers) as client:
-            resp = client.post(self._transactions_url(), json=payload)
+            resp = await client.post(self._transactions_url(), json=payload)
             resp.raise_for_status()
             data = resp.json()
         return data["id"]

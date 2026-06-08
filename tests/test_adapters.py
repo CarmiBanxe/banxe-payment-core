@@ -23,31 +23,15 @@ from src.ports.payment_switch_port import PaymentRequest, PaymentStatus, Payment
 # ---------------------------------------------------------------------------
 
 
-def _make_async_client_mock(response_data: dict, *, status_code: int = 200):
-    """Return a mock httpx.AsyncClient context manager with preset response."""
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = response_data
-    mock_resp.raise_for_status.return_value = None
-    mock_resp.status_code = status_code
-
-    mock_client = MagicMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=None)
-    mock_client.post.return_value = mock_resp
-    mock_client.get.return_value = mock_resp
-    mock_client.patch.return_value = mock_resp
-    return mock_client
-
-
 def _make_strict_async_client_mock(
     response_data: dict, *, status_code: int = 200, raise_error: bool = False
 ):
     """Return a *strictly* mocked httpx.AsyncClient whose verbs are AsyncMock.
 
-    Unlike _make_async_client_mock, post/get/patch are AsyncMock — so a caller
-    that forgets `await` gets back a coroutine (not the response) and blows up on
-    resp.raise_for_status(). The lenient helper used plain MagicMock for the
-    verbs, which silently hid the missing-await bug (see fix/hyperswitch-missing-await).
+    post/get/patch are AsyncMock — so a caller that forgets `await` gets back a
+    coroutine (not the response) and blows up on resp.raise_for_status(). A plain
+    MagicMock for the verbs would silently hide the missing-await bug (the failure
+    mode fixed for all three adapters in PR #15 and fix/midaz-paymentology-missing-await).
 
     raise_error=True makes resp.raise_for_status() raise httpx.HTTPStatusError,
     so error-status handling can be asserted.
@@ -387,6 +371,15 @@ class TestHyperswitchAdapterHTTP:
 
 
 class TestMidazAdapterHTTP:
+    """HTTP-path tests using the STRICT AsyncMock helper.
+
+    Mirrors TestHyperswitchAdapterHTTP (PR #15): _make_strict_async_client_mock
+    makes get/post/patch AsyncMock, so a missing `await` surfaces as a coroutine
+    that fails on resp.raise_for_status() instead of being silently swallowed.
+    Each happy-path test asserts the verb was *awaited* (assert_awaited_once) and
+    each httpx path has an error-status test asserting HTTPStatusError propagates.
+    """
+
     def _adapter(self):
         return MidazAdapter(
             base_url="http://localhost:8095",
@@ -398,9 +391,12 @@ class TestMidazAdapterHTTP:
     @pytest.mark.asyncio
     async def test_get_balance_returns_balance_result(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock({"balance": {"available": 50000, "onHold": 1000}})
+        mock_client = _make_strict_async_client_mock(
+            {"balance": {"available": 50000, "onHold": 1000}}
+        )
         with patch("src.adapters.midaz_adapter.httpx.AsyncClient", return_value=mock_client):
             result = await adapter.get_balance("acc_001", "GBP")
+        mock_client.get.assert_awaited_once()
         assert result.available_minor == 50000
         assert result.pending_minor == 1000
         assert result.currency == "GBP"
@@ -408,62 +404,108 @@ class TestMidazAdapterHTTP:
     @pytest.mark.asyncio
     async def test_get_balance_empty_balance_field(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock({})
+        mock_client = _make_strict_async_client_mock({})
         with patch("src.adapters.midaz_adapter.httpx.AsyncClient", return_value=mock_client):
             result = await adapter.get_balance("acc_002", "EUR")
+        mock_client.get.assert_awaited_once()
         assert result.available_minor == 0
         assert result.pending_minor == 0
 
     @pytest.mark.asyncio
+    async def test_get_balance_raises_on_error_status(self):
+        adapter = self._adapter()
+        mock_client = _make_strict_async_client_mock({}, status_code=500, raise_error=True)
+        with (
+            patch("src.adapters.midaz_adapter.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await adapter.get_balance("acc_001", "GBP")
+
+    @pytest.mark.asyncio
     async def test_debit_returns_transaction_id(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock({"id": "txn_debit_001"})
+        mock_client = _make_strict_async_client_mock({"id": "txn_debit_001"})
         with patch("src.adapters.midaz_adapter.httpx.AsyncClient", return_value=mock_client):
             entry = _make_ledger_entry(amount_minor=-500)
             txn_id = await adapter.debit(entry)
+        mock_client.post.assert_awaited_once()
         assert txn_id == "txn_debit_001"
 
     @pytest.mark.asyncio
     async def test_credit_returns_transaction_id(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock({"id": "txn_credit_001"})
+        mock_client = _make_strict_async_client_mock({"id": "txn_credit_001"})
         with patch("src.adapters.midaz_adapter.httpx.AsyncClient", return_value=mock_client):
             entry = _make_ledger_entry(amount_minor=1000)
             txn_id = await adapter.credit(entry)
+        mock_client.post.assert_awaited_once()
         assert txn_id == "txn_credit_001"
 
     @pytest.mark.asyncio
     async def test_reserve_returns_transaction_id(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock({"id": "txn_reserve_001"})
+        mock_client = _make_strict_async_client_mock({"id": "txn_reserve_001"})
         with patch("src.adapters.midaz_adapter.httpx.AsyncClient", return_value=mock_client):
             entry = _make_ledger_entry(amount_minor=200)
             txn_id = await adapter.reserve(entry)
+        mock_client.post.assert_awaited_once()
         assert txn_id == "txn_reserve_001"
+
+    @pytest.mark.asyncio
+    async def test_post_transaction_raises_on_error_status(self):
+        adapter = self._adapter()
+        mock_client = _make_strict_async_client_mock({}, status_code=502, raise_error=True)
+        with (
+            patch("src.adapters.midaz_adapter.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await adapter.debit(_make_ledger_entry(amount_minor=-500))
 
     @pytest.mark.asyncio
     async def test_release_reservation(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock({})
+        mock_client = _make_strict_async_client_mock({})
         with patch("src.adapters.midaz_adapter.httpx.AsyncClient", return_value=mock_client):
             await adapter.release_reservation("res_001")
-        mock_client.patch.assert_called_once()
+        mock_client.patch.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_release_reservation_raises_on_error_status(self):
+        adapter = self._adapter()
+        mock_client = _make_strict_async_client_mock({}, status_code=409, raise_error=True)
+        with (
+            patch("src.adapters.midaz_adapter.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await adapter.release_reservation("res_001")
 
     @pytest.mark.asyncio
     async def test_settle_reservation_with_amount(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock({"id": "txn_settled_001"})
+        mock_client = _make_strict_async_client_mock({"id": "txn_settled_001"})
         with patch("src.adapters.midaz_adapter.httpx.AsyncClient", return_value=mock_client):
             result = await adapter.settle_reservation("res_001", actual_amount_minor=800)
+        mock_client.patch.assert_awaited_once()
         assert result == "txn_settled_001"
 
     @pytest.mark.asyncio
     async def test_settle_reservation_without_amount(self):
         adapter = self._adapter()
-        mock_client = _make_async_client_mock({"id": "txn_settled_002"})
+        mock_client = _make_strict_async_client_mock({"id": "txn_settled_002"})
         with patch("src.adapters.midaz_adapter.httpx.AsyncClient", return_value=mock_client):
             result = await adapter.settle_reservation("res_002")
+        mock_client.patch.assert_awaited_once()
         assert result == "txn_settled_002"
+
+    @pytest.mark.asyncio
+    async def test_settle_reservation_raises_on_error_status(self):
+        adapter = self._adapter()
+        mock_client = _make_strict_async_client_mock({}, status_code=500, raise_error=True)
+        with (
+            patch("src.adapters.midaz_adapter.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await adapter.settle_reservation("res_001", actual_amount_minor=800)
 
     def test_accounts_url_format(self):
         adapter = self._adapter()
@@ -486,6 +528,14 @@ class TestMidazAdapterHTTP:
 
 
 class TestPaymentologyAdapterHTTP:
+    """HTTP-path tests using the STRICT AsyncMock helper.
+
+    Mirrors TestHyperswitchAdapterHTTP (PR #15): get/post/patch are AsyncMock so a
+    missing `await` surfaces. Each happy-path test asserts the verb was *awaited*
+    and each httpx path has an error-status test asserting HTTPStatusError
+    propagates. (authorise_transaction makes no httpx call — it is a stub.)
+    """
+
     def _adapter(self):
         return PaymentologyAdapter(
             base_url="https://api.paymentology.com",
@@ -497,7 +547,7 @@ class TestPaymentologyAdapterHTTP:
         from src.ports.issuer_port import CardIssueRequest, CardStatus
 
         adapter = self._adapter()
-        mock_client = _make_async_client_mock(
+        mock_client = _make_strict_async_client_mock(
             {
                 "cardId": "card_001",
                 "maskedPan": "****1234",
@@ -514,39 +564,82 @@ class TestPaymentologyAdapterHTTP:
                 currency="GBP",
             )
             result = await adapter.issue_card(req)
+        mock_client.post.assert_awaited_once()
         assert result.card_id == "card_001"
         assert result.masked_pan == "****1234"
         assert result.status == CardStatus.ACTIVE
         assert result.expiry_year == 2028
 
     @pytest.mark.asyncio
+    async def test_issue_card_raises_on_error_status(self):
+        from src.ports.issuer_port import CardIssueRequest
+
+        adapter = self._adapter()
+        mock_client = _make_strict_async_client_mock({}, status_code=502, raise_error=True)
+        with (
+            patch("src.adapters.paymentology_adapter.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await adapter.issue_card(
+                CardIssueRequest(
+                    customer_id="cust_001",
+                    program_id="prog_001",
+                    cardholder_name="John Doe",
+                    currency="GBP",
+                )
+            )
+
+    @pytest.mark.asyncio
     async def test_suspend_card_returns_suspended_status(self):
         from src.ports.issuer_port import CardStatus
 
         adapter = self._adapter()
-        mock_client = _make_async_client_mock({})
+        mock_client = _make_strict_async_client_mock({})
         with patch("src.adapters.paymentology_adapter.httpx.AsyncClient", return_value=mock_client):
             status = await adapter.suspend_card("card_001", reason="fraud")
+        mock_client.patch.assert_awaited_once()
         assert status == CardStatus.SUSPENDED
+
+    @pytest.mark.asyncio
+    async def test_suspend_card_raises_on_error_status(self):
+        adapter = self._adapter()
+        mock_client = _make_strict_async_client_mock({}, status_code=409, raise_error=True)
+        with (
+            patch("src.adapters.paymentology_adapter.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await adapter.suspend_card("card_001", reason="fraud")
 
     @pytest.mark.asyncio
     async def test_cancel_card_returns_cancelled_status(self):
         from src.ports.issuer_port import CardStatus
 
         adapter = self._adapter()
-        mock_client = _make_async_client_mock({})
+        mock_client = _make_strict_async_client_mock({})
         with patch("src.adapters.paymentology_adapter.httpx.AsyncClient", return_value=mock_client):
             status = await adapter.cancel_card("card_002", reason="customer_request")
+        mock_client.patch.assert_awaited_once()
         assert status == CardStatus.CANCELLED
+
+    @pytest.mark.asyncio
+    async def test_cancel_card_raises_on_error_status(self):
+        adapter = self._adapter()
+        mock_client = _make_strict_async_client_mock({}, status_code=500, raise_error=True)
+        with (
+            patch("src.adapters.paymentology_adapter.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await adapter.cancel_card("card_002", reason="customer_request")
 
     @pytest.mark.asyncio
     async def test_get_card_status_active(self):
         from src.ports.issuer_port import CardStatus
 
         adapter = self._adapter()
-        mock_client = _make_async_client_mock({"status": "ACTIVE"})
+        mock_client = _make_strict_async_client_mock({"status": "ACTIVE"})
         with patch("src.adapters.paymentology_adapter.httpx.AsyncClient", return_value=mock_client):
             status = await adapter.get_card_status("card_003")
+        mock_client.get.assert_awaited_once()
         assert status == CardStatus.ACTIVE
 
     @pytest.mark.asyncio
@@ -554,7 +647,18 @@ class TestPaymentologyAdapterHTTP:
         from src.ports.issuer_port import CardStatus
 
         adapter = self._adapter()
-        mock_client = _make_async_client_mock({"status": "UNKNOWN_STATUS"})
+        mock_client = _make_strict_async_client_mock({"status": "UNKNOWN_STATUS"})
         with patch("src.adapters.paymentology_adapter.httpx.AsyncClient", return_value=mock_client):
             status = await adapter.get_card_status("card_004")
+        mock_client.get.assert_awaited_once()
         assert status == CardStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_get_card_status_raises_on_error_status(self):
+        adapter = self._adapter()
+        mock_client = _make_strict_async_client_mock({}, status_code=404, raise_error=True)
+        with (
+            patch("src.adapters.paymentology_adapter.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await adapter.get_card_status("card_003")
