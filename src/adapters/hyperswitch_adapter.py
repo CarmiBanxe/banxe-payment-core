@@ -72,7 +72,7 @@ class HyperswitchAdapter(PaymentSwitchPort):
             "metadata": request.metadata or {},
         }
         async with httpx.AsyncClient(headers=self._headers) as client:
-            resp = client.post(f"{self._base_url}/payments", json=payload)
+            resp = await client.post(f"{self._base_url}/payments", json=payload)
             resp.raise_for_status()
             data = resp.json()
         return self._parse_result(data)
@@ -82,7 +82,9 @@ class HyperswitchAdapter(PaymentSwitchPort):
         if amount_minor is not None:
             payload["amount_to_capture"] = amount_minor
         async with httpx.AsyncClient(headers=self._headers) as client:
-            resp = client.post(f"{self._base_url}/payments/{transaction_id}/capture", json=payload)
+            resp = await client.post(
+                f"{self._base_url}/payments/{transaction_id}/capture", json=payload
+            )
             resp.raise_for_status()
             data = resp.json()
         return self._parse_result(data)
@@ -90,7 +92,7 @@ class HyperswitchAdapter(PaymentSwitchPort):
     async def refund(self, transaction_id: str, amount_minor: int, reason: str) -> PaymentResult:
         payload = {"payment_id": transaction_id, "amount": amount_minor, "reason": reason}
         async with httpx.AsyncClient(headers=self._headers) as client:
-            resp = client.post(f"{self._base_url}/refunds", json=payload)
+            resp = await client.post(f"{self._base_url}/refunds", json=payload)
             resp.raise_for_status()
             data = resp.json()
         return PaymentResult(
@@ -103,7 +105,7 @@ class HyperswitchAdapter(PaymentSwitchPort):
 
     async def void(self, transaction_id: str) -> PaymentResult:
         async with httpx.AsyncClient(headers=self._headers) as client:
-            resp = client.post(
+            resp = await client.post(
                 f"{self._base_url}/payments/{transaction_id}/cancel",
                 json={"cancellation_reason": "requested_by_customer"},
             )
@@ -113,7 +115,7 @@ class HyperswitchAdapter(PaymentSwitchPort):
 
     async def get_payment_status(self, transaction_id: str) -> PaymentResult:
         async with httpx.AsyncClient(headers=self._headers) as client:
-            resp = client.get(f"{self._base_url}/payments/{transaction_id}")
+            resp = await client.get(f"{self._base_url}/payments/{transaction_id}")
             resp.raise_for_status()
             data = resp.json()
         return self._parse_result(data)
