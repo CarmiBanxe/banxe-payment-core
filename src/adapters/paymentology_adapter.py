@@ -72,7 +72,7 @@ class PaymentologyAdapter(IssuerPort):
             "metadata": request.metadata or {},
         }
         async with httpx.AsyncClient(headers=self._headers) as client:
-            resp = client.post(f"{self._base_url}/cards", json=payload)
+            resp = await client.post(f"{self._base_url}/cards", json=payload)
             resp.raise_for_status()
             data = resp.json()
         return CardIssueResult(
@@ -95,7 +95,7 @@ class PaymentologyAdapter(IssuerPort):
 
     async def suspend_card(self, card_id: str, reason: str) -> CardStatus:
         async with httpx.AsyncClient(headers=self._headers) as client:
-            resp = client.patch(
+            resp = await client.patch(
                 f"{self._base_url}/cards/{card_id}",
                 json={"status": "SUSPENDED", "reason": reason},
             )
@@ -104,7 +104,7 @@ class PaymentologyAdapter(IssuerPort):
 
     async def cancel_card(self, card_id: str, reason: str) -> CardStatus:
         async with httpx.AsyncClient(headers=self._headers) as client:
-            resp = client.patch(
+            resp = await client.patch(
                 f"{self._base_url}/cards/{card_id}",
                 json={"status": "CANCELLED", "reason": reason},
             )
@@ -113,7 +113,7 @@ class PaymentologyAdapter(IssuerPort):
 
     async def get_card_status(self, card_id: str) -> CardStatus:
         async with httpx.AsyncClient(headers=self._headers) as client:
-            resp = client.get(f"{self._base_url}/cards/{card_id}")
+            resp = await client.get(f"{self._base_url}/cards/{card_id}")
             resp.raise_for_status()
             data = resp.json()
         return _CARD_STATUS_MAP.get(data.get("status", "PENDING"), CardStatus.PENDING)
