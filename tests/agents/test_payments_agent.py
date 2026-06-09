@@ -22,6 +22,8 @@ from src.agents.payments_agent import (
     CostCap,
     CostWindow,
     DecisionRecorder,
+    IdempotencyStorePort,
+    InMemoryIdempotencyStore,
     PaymentIntent,
     PaymentsAgent,
     PaymentsMask,
@@ -119,14 +121,16 @@ def make_mask(**overrides) -> PaymentsMask:
     return PaymentsMask(**base)
 
 
-def make_instruction(amount: str = "500.00") -> PaymentInstruction:
+def make_instruction(
+    amount: str = "500.00", *, idempotency_key: str = "idem-42"
+) -> PaymentInstruction:
     return PaymentInstruction(
         from_account=PartnerAccountId(partner=PartnerType.SEPA, external_account_id="acct_1"),
         to_iban="GB29NWBK60161331926819",
         amount=amount,
         currency="EUR",
         reference="invoice-42",
-        idempotency_key="idem-42",
+        idempotency_key=idempotency_key,
         correlation_id="corr-42",
     )
 
@@ -138,11 +142,12 @@ def make_intent(
     biometric: bool = True,
     cost: RequestCost | None = None,
     process_ref: ProcessRef | None = None,
+    idempotency_key: str = "idem-42",
 ) -> PaymentIntent:
     return PaymentIntent(
         intent_text="Pay 500 EUR to my landlord",
         process_ref=process_ref or ProcessRef(process_id="PROC-PAYMENT-SEPA", version="1"),
-        instruction=make_instruction(amount),
+        instruction=make_instruction(amount, idempotency_key=idempotency_key),
         correlation_id="corr-42",
         confidence_score=confidence,
         request_cost=cost or RequestCost(tokens=500, cost=Decimal("0.05")),
@@ -157,6 +162,7 @@ def make_agent(
     wallet: FakeWalletPort | None = None,
     recorder: FakeRecorder | None = None,
     cost_window: CostWindow | None = None,
+    idempotency_store: IdempotencyStorePort | None = None,
 ) -> tuple[PaymentsAgent, FakePartnerPort, FakeWalletPort, FakeRecorder]:
     partner = partner or FakePartnerPort()
     wallet = wallet or FakeWalletPort()
@@ -167,6 +173,7 @@ def make_agent(
         recorder=recorder,
         mask=mask or make_mask(),
         cost_window=cost_window,
+        idempotency_store=idempotency_store,
     )
     return agent, partner, wallet, recorder
 
@@ -412,9 +419,12 @@ async def test_unresolved_process_ref_blocks():
 
 async def test_lineage_record_emitted_per_action_with_adr046_fields():
     agent, _, _, recorder = make_agent()
-    await agent.initiate_payment(make_intent())
-    await agent.initiate_payment(make_intent(confidence=0.50))
+    # Distinct idempotency keys: each is its own logical action, so the second
+    # (low-confidence) call is a genuine halt — not an idempotent replay.
+    await agent.initiate_payment(make_intent(idempotency_key="idem-a"))
+    await agent.initiate_payment(make_intent(idempotency_key="idem-b", confidence=0.50))
     assert len(recorder.records) == 2  # one per action, including the halt
+    assert recorder.records[1].action_taken == "BLOCK_LOW_CONFIDENCE"
 
     rec = recorder.records[0]
     assert rec.record_id
@@ -433,3 +443,73 @@ async def test_invalid_confidence_raises():
     agent, _, _, _ = make_agent()
     with pytest.raises(ValueError):
         await agent.initiate_payment(make_intent(confidence=1.5))
+
+
+# ── Idempotent replay protection (S5.3 — DOUBLE-PAYMENT class) ─────────────────
+
+
+async def test_duplicate_idempotency_key_suppresses_second_payment():
+    # A retried/double-submitted intent with an already-executed idempotency_key
+    # must NOT move funds twice: the port executes once, the replay is suppressed
+    # and returns the prior result, and each call still emits exactly one record.
+    agent, partner, _, recorder = make_agent()
+
+    first = await agent.initiate_payment(make_intent())
+    assert first.executed is True
+    assert len(partner.calls) == 1
+
+    second = await agent.initiate_payment(make_intent())  # same idempotency_key
+    assert second.executed is False
+    assert second.decision is ConfirmationDecision.AUTO
+    assert second.halt_reason == "duplicate_suppressed"
+    assert second.record.action_taken == "DUPLICATE_SUPPRESSED"
+    assert second.result == first.result  # prior result returned
+
+    assert len(partner.calls) == 1  # port executed ONCE — no double-payment
+    assert len(recorder.records) == 2  # exactly one record per call
+    assert recorder.records[1].action_taken == "DUPLICATE_SUPPRESSED"
+    assert recorder.records[1].compliance_result is ComplianceResult.NA
+
+
+async def test_distinct_idempotency_keys_both_execute():
+    agent, partner, _, _ = make_agent()
+    await agent.initiate_payment(make_intent(idempotency_key="key-1"))
+    await agent.initiate_payment(make_intent(idempotency_key="key-2"))
+    assert len(partner.calls) == 2  # distinct keys → both move funds
+
+
+async def test_suppressed_duplicate_does_not_consume_budget():
+    # A suppressed replay must not touch the per-window budget: only the original
+    # execution accrues cost (ADR-047).
+    window = CostWindow()
+    agent, _, _, _ = make_agent(cost_window=window)
+    await agent.initiate_payment(make_intent(cost=RequestCost(tokens=300, cost=Decimal("0.02"))))
+    await agent.initiate_payment(make_intent(cost=RequestCost(tokens=300, cost=Decimal("0.02"))))
+    assert window.used_tokens == 300  # second (suppressed) added nothing
+    assert window.used_cost == Decimal("0.02")
+
+
+async def test_failed_payment_not_marked_allows_retry():
+    # Mark-after-success: a payment that never executed (here, blocked on low
+    # confidence) does not claim its key, so a corrected retry still runs.
+    agent, partner, _, _ = make_agent()
+    blocked = await agent.initiate_payment(
+        make_intent(idempotency_key="retry-key", confidence=0.50)
+    )
+    assert blocked.executed is False
+    assert partner.calls == []
+
+    retried = await agent.initiate_payment(
+        make_intent(idempotency_key="retry-key", confidence=0.95, biometric=True)
+    )
+    assert retried.executed is True
+    assert len(partner.calls) == 1  # the retry was NOT suppressed
+
+
+async def test_injected_idempotency_store_is_used():
+    store = InMemoryIdempotencyStore()
+    agent, partner, _, _ = make_agent(idempotency_store=store)
+    outcome = await agent.initiate_payment(make_intent(idempotency_key="wired-key"))
+    assert outcome.executed is True
+    assert await store.has_seen("wired-key") is True
+    assert await store.prior_result("wired-key") == outcome.result

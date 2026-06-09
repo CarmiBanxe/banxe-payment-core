@@ -14,6 +14,8 @@ exercise the same imported classes after the DRY extraction):
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -28,6 +30,7 @@ from src.agents._lineage import (
     CostCap,
     CostWindow,
     DecisionRecorder,
+    InMemoryIdempotencyStore,
     ProcessRef,
     RequestCost,
 )
@@ -64,6 +67,45 @@ def test_cost_window_add_accumulates_both_dimensions() -> None:
     window.add(RequestCost(tokens=25, cost=Decimal("0.25")))
     assert window.used_tokens == 125
     assert window.used_cost == Decimal("0.75")
+
+
+# ── CostWindow concurrency (S5.3 — RACE under concurrent live intents) ─────────
+
+_RACE_N = 200  # concurrent adds; high enough that an unguarded RMW reliably loses
+
+
+async def test_cost_window_concurrent_add_has_no_lost_updates() -> None:
+    # One shared window, N adds executing concurrently across threads (as the S5.1
+    # L1 router will drive concurrent intents). The threading.Lock makes each
+    # read-modify-write atomic, so the totals equal the EXACT sum — no lost update.
+    window = CostWindow()
+    cost = RequestCost(tokens=1, cost=Decimal("0.01"))
+    await asyncio.gather(*(asyncio.to_thread(window.add, cost) for _ in range(_RACE_N)))
+    assert window.used_tokens == _RACE_N
+    assert window.used_cost == Decimal("0.01") * _RACE_N
+
+
+async def test_cost_window_lock_is_load_bearing() -> None:
+    # Control proving the test catches the race the lock prevents: an UNGUARDED
+    # read-modify-write (the pre-fix shape, with the window widened so threads
+    # reliably interleave) loses updates under the very same concurrency, ending
+    # BELOW the exact sum. CostWindow.add (locked) does not — see the test above.
+    class _UnlockedWindow:
+        def __init__(self) -> None:
+            self.used_tokens = 0
+            self.used_cost = Decimal("0")
+
+        def add(self, cost: RequestCost) -> None:
+            tokens = self.used_tokens
+            amount = self.used_cost
+            time.sleep(0.001)  # widen the RMW window so the race is deterministic
+            self.used_tokens = tokens + cost.tokens
+            self.used_cost = amount + cost.cost
+
+    window = _UnlockedWindow()
+    cost = RequestCost(tokens=1, cost=Decimal("0.01"))
+    await asyncio.gather(*(asyncio.to_thread(window.add, cost) for _ in range(_RACE_N)))
+    assert window.used_tokens < _RACE_N  # updates were lost without mutual exclusion
 
 
 # ── CostCap breach reasoning (per-request AND per-window) ──────────────────────
@@ -188,3 +230,20 @@ async def test_decision_recorder_is_injectable_abc() -> None:
 def test_decision_recorder_cannot_be_instantiated_directly() -> None:
     with pytest.raises(TypeError):
         DecisionRecorder()  # type: ignore[abstract]
+
+
+# ── InMemoryIdempotencyStore (S5.3 replay-protection default) ──────────────────
+
+
+async def test_in_memory_idempotency_store_roundtrip() -> None:
+    store = InMemoryIdempotencyStore()
+    assert await store.has_seen("k") is False
+    assert await store.prior_result("k") is None
+
+    await store.mark_seen("k", "result-ref-1")
+    assert await store.has_seen("k") is True
+    assert await store.prior_result("k") == "result-ref-1"
+
+    # An unrelated key stays unseen and has no prior result.
+    assert await store.has_seen("other") is False
+    assert await store.prior_result("other") is None
