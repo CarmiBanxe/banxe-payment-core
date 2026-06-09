@@ -379,6 +379,10 @@ class FXExchangeAgent:
         return ConfirmationDecision.BLOCK
 
     def _cost_breaches(self, cost: RequestCost) -> bool:
+        # Pre-flight cap gate. The per-request terms are the authoritative stateless
+        # check (no reservation needed). The per-window terms here are a NON-authoritative
+        # optimistic fast-path — the atomic authority is CostWindow.try_reserve, called
+        # before dispatch in _run_action, which closes the check-then-debit TOCTOU (S6.3).
         cap = self._mask.cost_cap
         return (
             cost.tokens > cap.max_request_tokens
@@ -545,44 +549,68 @@ class FXExchangeAgent:
         compliance_result = ev.compliance_result
 
         if ev.proceed:
-            try:
-                result = await port_call()
-            except ExchangePortError as exc:
-                action_taken = f"HALT_EXCHANGE_ERROR:{type(exc).__name__}"
-                if isinstance(exc, ComplianceBlock):
-                    compliance_result = ComplianceResult.FAIL
-                await self._emit(
-                    ctx,
-                    ev,
-                    action_taken,
-                    executed=False,
-                    compliance_result=compliance_result,
-                    reasoning=f"Port rejected the action: {exc}",
-                )
-                raise
-            executed = True
-            self._window.add(ctx.request_cost)
-            # WalletPort settlement leg (ADR-021): only a FILLED order settles. The
-            # whole place_order action still owes exactly one lineage record, so a
-            # settlement failure is recorded here and re-raised (never a silent gap).
-            if (
-                settle is not None
-                and isinstance(result, OrderResult)
-                and result.state is OrderState.FILLED
-            ):
+            # Reserve-before-dispatch (S6.3): claim the per-window budget in one
+            # atomic check-and-debit BEFORE the await, closing the check-then-debit
+            # TOCTOU. A lost race (concurrent actions already drained the window)
+            # is a cost-cap BREACH — same disposition as the pre-flight cap gate,
+            # no port call, exactly one record (falls through to the emit below).
+            if self._window.try_reserve(ctx.request_cost, self._mask.cost_cap):
                 try:
-                    await settle(result)
-                except Exception as exc:  # noqa: BLE001 — re-raised after recording lineage
-                    action_taken = f"HALT_SETTLEMENT_ERROR:{type(exc).__name__}"
+                    result = await port_call()
+                except ExchangePortError as exc:
+                    # Release the reservation: the order never executed, so it
+                    # consumes no budget.
+                    self._window.release(ctx.request_cost)
+                    action_taken = f"HALT_EXCHANGE_ERROR:{type(exc).__name__}"
+                    if isinstance(exc, ComplianceBlock):
+                        compliance_result = ComplianceResult.FAIL
                     await self._emit(
                         ctx,
                         ev,
                         action_taken,
-                        executed=True,
+                        executed=False,
                         compliance_result=compliance_result,
-                        reasoning=f"Order placed but WalletPort settlement leg failed: {exc}",
+                        reasoning=f"Port rejected the action: {exc}",
                     )
                     raise
+                executed = True
+                # Budget already claimed by try_reserve; the executed order keeps it.
+                # WalletPort settlement leg (ADR-021): only a FILLED order settles. The
+                # whole place_order action still owes exactly one lineage record, so a
+                # settlement failure is recorded here and re-raised (never a silent gap).
+                # The order DID execute, so its reservation is kept (NOT released).
+                if (
+                    settle is not None
+                    and isinstance(result, OrderResult)
+                    and result.state is OrderState.FILLED
+                ):
+                    try:
+                        await settle(result)
+                    except Exception as exc:  # noqa: BLE001 — re-raised after recording lineage
+                        action_taken = f"HALT_SETTLEMENT_ERROR:{type(exc).__name__}"
+                        await self._emit(
+                            ctx,
+                            ev,
+                            action_taken,
+                            executed=True,
+                            compliance_result=compliance_result,
+                            reasoning=f"Order placed but WalletPort settlement leg failed: {exc}",
+                        )
+                        raise
+            else:
+                ev = _Evaluation(
+                    ConfirmationDecision.BLOCK,
+                    False,
+                    "HALT_COST_CAP_BREACH",
+                    "Cost-cap breach (per-window budget exhausted under concurrency); "
+                    "action refused (ADR-047).",
+                    ev.policies,
+                    ComplianceResult.NA,
+                    BudgetBreach.BREACH,
+                    halt_reason="cost_cap_breach",
+                )
+                action_taken = ev.action_taken
+                compliance_result = ev.compliance_result
 
         record = await self._emit(
             ctx,

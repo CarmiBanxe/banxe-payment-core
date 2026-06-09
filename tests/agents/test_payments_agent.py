@@ -9,6 +9,7 @@ agent is exercised as pure governance logic with no live infra.
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 
 import pytest
@@ -313,6 +314,125 @@ async def test_window_accumulates_on_successful_action():
     window = CostWindow()
     agent, _, _, _ = make_agent(cost_window=window)
     await agent.initiate_payment(make_intent(cost=RequestCost(tokens=300, cost=Decimal("0.02"))))
+    assert window.used_tokens == 300
+    assert window.used_cost == Decimal("0.02")
+
+
+# ── Reserve-before-dispatch under concurrency (S6.3 — cost-cap TOCTOU) ─────────
+
+
+class _GatedPartnerPort(FakePartnerPort):
+    """Partner port whose ``initiate_payment`` blocks on a shared gate, so every
+    dispatched action is in-flight simultaneously — forcing the concurrent window
+    race. The pre-fix check-then-add debited only AFTER this await, so all callers
+    passed the cap check before any debited; reserve-before-dispatch debits first."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+
+    async def initiate_payment(self, instruction: PaymentInstruction) -> PaymentResult:
+        self.calls.append(instruction)
+        await self.gate.wait()
+        return PaymentResult(status=PaymentStatus.ACCEPTED, partner_tx_id=f"ptx_{len(self.calls)}")
+
+
+class _RaceLosingWindow(CostWindow):
+    """A window that PASSES the pre-flight ``_cost_breaches`` read-check (its
+    ``used_*`` are zero) but LOSES the atomic reservation — simulating a concurrent
+    action that drained the per-window budget in the gap between ``_evaluate`` and
+    ``try_reserve`` (the exact cross-thread race ``try_reserve`` closes). Exercises
+    the agent's reserve-failed → cost-cap BLOCK branch deterministically."""
+
+    def try_reserve(self, cost: RequestCost, cap: CostCap) -> bool:
+        return False
+
+
+async def test_concurrent_intents_never_exceed_window_cap():
+    # Window admits exactly 3 payments of cost 0.20 (3 * 0.20 == 0.60 cap; a 4th
+    # would reach 0.80 > 0.60). Eight concurrent same-window intents all pass every
+    # other gate (AUTO + biometric); only the cap may stop them. With reserve-
+    # before-dispatch exactly 3 EXECUTE and used_cost never exceeds the cap. The
+    # pre-fix check-then-add let all 8 pass the cap check (debit was post-await) and
+    # execute — so this test fails without try_reserve.
+    mask = make_mask(
+        cost_cap=CostCap(
+            max_request_tokens=10_000,
+            max_request_cost=Decimal("1.00"),
+            max_window_tokens=10_000_000,
+            max_window_cost=Decimal("0.60"),
+        )
+    )
+    window = CostWindow()
+    partner = _GatedPartnerPort()
+    agent, _, _, recorder = make_agent(mask=mask, partner=partner, cost_window=window)
+    cost = RequestCost(tokens=1, cost=Decimal("0.20"))
+    n = 8
+    task = asyncio.gather(
+        *(
+            agent.initiate_payment(
+                make_intent(idempotency_key=f"k{i}", cost=cost, confidence=0.95, biometric=True)
+            )
+            for i in range(n)
+        )
+    )
+    # Let every coroutine run through evaluate + reserve and reach the port gate
+    # (the reserved ones) or fall out as a cost-cap BLOCK (the over-cap ones).
+    for _ in range(5):
+        await asyncio.sleep(0)
+    partner.gate.set()
+    outcomes = await task
+
+    executed = [o for o in outcomes if o.executed]
+    blocked = [o for o in outcomes if not o.executed]
+    assert len(executed) == 3  # never more than the cap admits
+    assert len(partner.calls) == 3  # only reserved actions ever dispatched to the port
+    assert window.used_cost == Decimal("0.60")  # exactly the cap, never transiently above
+    assert window.used_cost <= mask.cost_cap.max_window_cost
+    assert len(blocked) == 5
+    assert all(o.halt_reason == "cost_cap_breach" for o in blocked)
+    assert len(recorder.records) == n  # one lineage record per action, always
+
+
+async def test_lost_reservation_race_is_cost_cap_block():
+    # The reserve-failed branch: the pre-flight read-check passes but the atomic
+    # reservation loses the race (another action drained the budget in the gap).
+    # The action is refused as a cost-cap BREACH — BLOCK, no port call, exactly one
+    # record, identical disposition to the pre-flight cap gate.
+    window = _RaceLosingWindow()
+    agent, partner, _, recorder = make_agent(cost_window=window)
+    outcome = await agent.initiate_payment(make_intent(confidence=0.95, biometric=True))
+
+    assert outcome.decision is ConfirmationDecision.BLOCK
+    assert outcome.executed is False
+    assert outcome.halt_reason == "cost_cap_breach"
+    assert partner.calls == []  # no port call
+    assert len(recorder.records) == 1
+    assert recorder.records[0].budget_breach_flag is BudgetBreach.BREACH
+    assert recorder.records[0].action_taken == "HALT_COST_CAP_BREACH"
+
+
+async def test_reservation_released_on_port_halt_allows_retry():
+    # Release-on-halt: a money movement that passes reserve then HALTS at the port
+    # (a partner-side ComplianceBlock — a post-reserve compliance halt) releases its
+    # reservation, so the window is unchanged and a later legitimate action still
+    # has its full budget. Pre-dispatch halts (step-up, low confidence) never reserve.
+    window = CostWindow()
+    cost = RequestCost(tokens=300, cost=Decimal("0.02"))
+    failing = FakePartnerPort(raises=ComplianceBlock("sanctioned beneficiary"))
+    agent, _, _, _ = make_agent(partner=failing, cost_window=window)
+    with pytest.raises(ComplianceBlock):
+        await agent.initiate_payment(make_intent(confidence=0.99, biometric=True, cost=cost))
+    # Reservation released: the halted action consumed no budget.
+    assert window.used_tokens == 0
+    assert window.used_cost == Decimal("0")
+
+    # A retry on the SAME window (port now succeeds) executes and consumes exactly once.
+    agent2, _, _, _ = make_agent(cost_window=window)
+    outcome = await agent2.initiate_payment(
+        make_intent(idempotency_key="idem-retry", confidence=0.99, biometric=True, cost=cost)
+    )
+    assert outcome.executed is True
     assert window.used_tokens == 300
     assert window.used_cost == Decimal("0.02")
 

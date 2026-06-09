@@ -108,6 +108,106 @@ async def test_cost_window_lock_is_load_bearing() -> None:
     assert window.used_tokens < _RACE_N  # updates were lost without mutual exclusion
 
 
+# ── CostWindow reserve-before-dispatch (S6.3 — atomic check-and-debit) ─────────
+
+
+def _reserve_cap() -> CostCap:
+    # Per-request dims wide open (not under test here); the Decimal cost dim binds
+    # the window at exactly 5 reservations of 0.20 each (5 * 0.20 == 1.00).
+    return CostCap(
+        max_request_tokens=1_000_000,
+        max_request_cost=Decimal("1000"),
+        max_window_tokens=1_000_000,
+        max_window_cost=Decimal("1.00"),
+    )
+
+
+def test_try_reserve_within_cap_debits_and_returns_true() -> None:
+    window = CostWindow()
+    assert window.try_reserve(RequestCost(tokens=10, cost=Decimal("0.20")), _reserve_cap()) is True
+    assert window.used_tokens == 10
+    assert window.used_cost == Decimal("0.20")
+
+
+def test_try_reserve_over_window_cost_cap_returns_false_and_does_not_debit() -> None:
+    window = CostWindow(used_tokens=0, used_cost=Decimal("0.90"))
+    # 0.90 + 0.20 == 1.10 > 1.00 → refused, and NOTHING is debited.
+    assert window.try_reserve(RequestCost(tokens=10, cost=Decimal("0.20")), _reserve_cap()) is False
+    assert window.used_tokens == 0
+    assert window.used_cost == Decimal("0.90")
+
+
+def test_try_reserve_over_window_token_cap_returns_false_and_does_not_debit() -> None:
+    cap = CostCap(
+        max_request_tokens=1_000_000,
+        max_request_cost=Decimal("1000"),
+        max_window_tokens=100,
+        max_window_cost=Decimal("1000"),
+    )
+    window = CostWindow(used_tokens=90, used_cost=Decimal("0"))
+    assert window.try_reserve(RequestCost(tokens=20, cost=Decimal("0.01")), cap) is False
+    assert window.used_tokens == 90
+    assert window.used_cost == Decimal("0")
+
+
+def test_release_returns_a_reservation_to_the_window() -> None:
+    window = CostWindow()
+    cost = RequestCost(tokens=10, cost=Decimal("0.20"))
+    assert window.try_reserve(cost, _reserve_cap()) is True
+    window.release(cost)
+    assert window.used_tokens == 0
+    assert window.used_cost == Decimal("0")
+
+
+_RESERVE_CAP_SLOTS = 5  # _reserve_cap() admits exactly 5 reservations of 0.20
+
+
+async def test_try_reserve_is_atomic_under_concurrency_never_exceeds_cap() -> None:
+    # The S6.3 race: N concurrent reservations whose COMBINED cost (N * 0.20) far
+    # exceeds the per-window cap (1.00). Because try_reserve checks AND debits under
+    # one lock, exactly the cap's worth (5) succeed; the rest are refused, and the
+    # window NEVER transiently exceeds the cap (no bypass). The pre-fix check-then-add
+    # shape would let every concurrent action pass its check before any debited.
+    window = CostWindow()
+    cap = _reserve_cap()
+    cost = RequestCost(tokens=1, cost=Decimal("0.20"))
+    granted = await asyncio.gather(
+        *(asyncio.to_thread(window.try_reserve, cost, cap) for _ in range(_RACE_N))
+    )
+    assert sum(granted) == _RESERVE_CAP_SLOTS
+    assert window.used_cost == cap.max_window_cost  # == 1.00, never above
+    assert window.used_cost <= cap.max_window_cost
+
+
+async def test_unlocked_check_then_debit_bypasses_cap() -> None:
+    # Control proving the test above catches the very race try_reserve closes: an
+    # UNGUARDED check-then-debit (the pre-fix shape, RMW window widened so threads
+    # interleave) lets MORE than the cap's worth pass their check before any debits,
+    # so the window ends ABOVE the cap — the transient bypass S6.3 fixes.
+    class _UnlockedWindow:
+        def __init__(self) -> None:
+            self.used_cost = Decimal("0")
+
+        def try_reserve(self, cost: RequestCost, cap: CostCap) -> bool:
+            if self.used_cost + cost.cost > cap.max_window_cost:
+                return False
+            seen = self.used_cost
+            time.sleep(0.001)  # widen the check→debit gap so the race is deterministic
+            self.used_cost = seen + cost.cost
+            return True
+
+    window = _UnlockedWindow()
+    cap = _reserve_cap()
+    cost = RequestCost(tokens=1, cost=Decimal("0.20"))
+    granted = await asyncio.gather(
+        *(asyncio.to_thread(window.try_reserve, cost, cap) for _ in range(_RACE_N))
+    )
+    # Far more than the cap's 5 slots are granted: every thread reads the low
+    # used_cost during the widened check→debit gap and passes. Each grant maps to an
+    # executed action, so the per-window cap is bypassed — exactly the S6.3 harm.
+    assert sum(granted) > _RESERVE_CAP_SLOTS
+
+
 # ── CostCap breach reasoning (per-request AND per-window) ──────────────────────
 
 

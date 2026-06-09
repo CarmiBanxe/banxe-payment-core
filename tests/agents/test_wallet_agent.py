@@ -17,6 +17,7 @@ is exercised as pure governance logic with no live infra; no real adapters impor
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from decimal import Decimal
 
@@ -521,6 +522,99 @@ async def test_window_accumulates_only_on_execution():
     # A halted action does not accumulate.
     await agent.validate_address(validate_intent(confidence=0.50))
     assert window.used_tokens == 40
+
+
+# ── Reserve-before-dispatch under concurrency (S6.3 — cost-cap TOCTOU) ─────────
+
+
+class _GatedWalletPort(FakeWalletPort):
+    """Wallet port whose ``validate_address`` blocks on a shared gate so every
+    dispatched action is in-flight simultaneously — forcing the concurrent
+    per-window race the pre-fix check-then-add (debit after this await) could not
+    contain."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+
+    async def validate_address(self, chain, address):
+        self.calls.append(f"validate_address:{chain.value}:{address}")
+        await self.gate.wait()
+        return True
+
+
+class _RaceLosingWindow(CostWindow):
+    """Passes the pre-flight ``_cost_breaches`` read-check (``used_*`` are zero) but
+    LOSES the atomic reservation — simulating a concurrent action that drained the
+    budget in the gap between ``_evaluate`` and ``try_reserve``."""
+
+    def try_reserve(self, cost: RequestCost, cap: CostCap) -> bool:
+        return False
+
+
+async def test_concurrent_reads_never_exceed_window_cap():
+    # Window admits exactly 3 reads of 0.20 (cap 0.60); eight concurrent same-window
+    # reads all clear every other gate. Reserve-before-dispatch executes exactly 3
+    # and never exceeds the cap; the pre-fix check-then-add executed all 8.
+    mask = make_mask(
+        cost_cap=CostCap(
+            max_request_tokens=10_000,
+            max_request_cost=Decimal("1.00"),
+            max_window_tokens=10_000_000,
+            max_window_cost=Decimal("0.60"),
+        )
+    )
+    window = CostWindow()
+    wallet = _GatedWalletPort()
+    agent, _, recorder = make_agent(mask=mask, wallet=wallet, cost_window=window)
+    cost = RequestCost(tokens=1, cost=Decimal("0.20"))
+    n = 8
+    task = asyncio.gather(
+        *(agent.validate_address(validate_intent(cost=cost, confidence=0.95)) for _ in range(n))
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+    wallet.gate.set()
+    outcomes = await task
+
+    executed = [o for o in outcomes if o.executed]
+    blocked = [o for o in outcomes if not o.executed]
+    assert len(executed) == 3
+    assert len(wallet.calls) == 3  # only reserved actions dispatched
+    assert window.used_cost == Decimal("0.60")
+    assert window.used_cost <= mask.cost_cap.max_window_cost
+    assert all(o.halt_reason == "cost_cap_breach" for o in blocked)
+    assert len(recorder.records) == n
+
+
+async def test_lost_reservation_race_is_cost_cap_breach():
+    # The reserve-failed branch: pre-flight check passes but the atomic reservation
+    # loses the race → cost-cap BREACH, BLOCK, no port call, exactly one record.
+    window = _RaceLosingWindow()
+    agent, wallet, recorder = make_agent(cost_window=window)
+    outcome = await agent.validate_address(validate_intent(confidence=0.95))
+
+    assert outcome.decision is ConfirmationDecision.BLOCK
+    assert outcome.executed is False
+    assert outcome.halt_reason == "cost_cap_breach"
+    assert wallet.calls == []
+    assert len(recorder.records) == 1
+    assert recorder.records[0].budget_breach_flag is BudgetBreach.BREACH
+    assert recorder.records[0].action_taken == "HALT_COST_CAP_BREACH"
+
+
+async def test_reservation_released_on_sensitive_port_halt():
+    # Release-on-halt on the secret-bearing contour: a sign_tx that passes reserve
+    # then the WalletPort raises releases its reservation — the window is unchanged,
+    # so a failed signing consumes no budget (R-SEC: only the exception TYPE leaks).
+    window = CostWindow()
+    cost = RequestCost(tokens=300, cost=Decimal("0.02"))
+    wallet = FakeWalletPort(raises=RuntimeError("HSM offline"))
+    agent, _, _ = make_agent(wallet=wallet, cost_window=window)
+    with pytest.raises(RuntimeError):
+        await agent.sign_tx(sign_intent(confidence=0.99, biometric=True, cost=cost))
+    assert window.used_tokens == 0
+    assert window.used_cost == Decimal("0")
 
 
 # ── BLOCK low band ────────────────────────────────────────────────────────────
