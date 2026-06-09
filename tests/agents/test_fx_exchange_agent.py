@@ -9,6 +9,7 @@ as pure governance logic with no live infra; no real adapters are imported.
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 
 import pytest
@@ -271,6 +272,84 @@ async def test_window_accumulates_on_successful_quote():
     await agent.get_rate(make_intent(cost=RequestCost(tokens=40, cost=Decimal("0.02"))))
     assert window.used_tokens == 40
     assert window.used_cost == Decimal("0.02")
+
+
+# ── Reserve-before-dispatch under concurrency (S6.3 — cost-cap TOCTOU) ─────────
+
+
+class _GatedExchangePort(FakeExchangePort):
+    """Exchange port whose ``get_rate`` blocks on a shared gate so every dispatched
+    action is in-flight simultaneously — forcing the concurrent per-window race the
+    pre-fix check-then-add (debit after this await) could not contain."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+
+    async def get_rate(self, base: AssetSymbol, quote: AssetSymbol) -> RateQuote:
+        self.calls.append((base, quote))
+        await self.gate.wait()
+        return self._quote
+
+
+class _RaceLosingWindow(CostWindow):
+    """Passes the pre-flight ``_cost_breaches`` read-check (``used_*`` are zero) but
+    LOSES the atomic reservation — simulating a concurrent action that drained the
+    budget in the gap between ``_evaluate`` and ``try_reserve``."""
+
+    def try_reserve(self, cost: RequestCost, cap: CostCap) -> bool:
+        return False
+
+
+async def test_concurrent_quotes_never_exceed_window_cap():
+    # Window admits exactly 3 quotes of 0.20 (cap 0.60); eight concurrent same-window
+    # reads all clear every other gate. Reserve-before-dispatch executes exactly 3 and
+    # never exceeds the cap; the pre-fix check-then-add executed all 8 (fails here).
+    mask = make_mask(
+        cost_cap=CostCap(
+            max_request_tokens=10_000,
+            max_request_cost=Decimal("1.00"),
+            max_window_tokens=10_000_000,
+            max_window_cost=Decimal("0.60"),
+        )
+    )
+    window = CostWindow()
+    exchange = _GatedExchangePort()
+    agent, _, recorder = make_agent(mask=mask, exchange=exchange, cost_window=window)
+    cost = RequestCost(tokens=1, cost=Decimal("0.20"))
+    n = 8
+    task = asyncio.gather(
+        *(agent.get_rate(make_intent(cost=cost, confidence=0.95)) for _ in range(n))
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+    exchange.gate.set()
+    outcomes = await task
+
+    executed = [o for o in outcomes if o.executed]
+    blocked = [o for o in outcomes if not o.executed]
+    assert len(executed) == 3
+    assert len(exchange.calls) == 3  # only reserved actions dispatched
+    assert window.used_cost == Decimal("0.60")
+    assert window.used_cost <= mask.cost_cap.max_window_cost
+    assert all(o.halt_reason == "cost_cap_breach" for o in blocked)
+    assert len(recorder.records) == n
+
+
+async def test_lost_reservation_race_is_cost_cap_breach():
+    # The reserve-failed branch: pre-flight check passes but the atomic reservation
+    # loses the race → cost-cap BREACH, BLOCK, no port call, exactly one record.
+    window = _RaceLosingWindow()
+    agent, exchange, recorder = make_agent(cost_window=window)
+    outcome = await agent.get_rate(make_intent(confidence=0.95))
+
+    assert outcome.decision is ConfirmationDecision.BLOCK
+    assert outcome.executed is False
+    assert outcome.halt_reason == "cost_cap_breach"
+    assert exchange.calls == []
+    assert len(recorder.records) == 1
+    assert recorder.records[0].budget_breach_flag is BudgetBreach.BREACH
+    assert recorder.records[0].action_taken == "HALT_COST_CAP_BREACH"
 
 
 # ── Confidence band: increment 1 executes AUTO only ───────────────────────────

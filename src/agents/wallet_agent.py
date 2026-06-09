@@ -549,6 +549,10 @@ class WalletAgent:
         return ConfirmationDecision.BLOCK
 
     def _cost_breaches(self, cost: RequestCost) -> bool:
+        # Pre-flight cap gate. The per-request terms are the authoritative stateless
+        # check (no reservation needed). The per-window terms here are a NON-authoritative
+        # optimistic fast-path — the atomic authority is CostWindow.try_reserve, called
+        # before dispatch in _run_action, which closes the check-then-debit TOCTOU (S6.3).
         cap = self._mask.cost_cap
         return (
             cost.tokens > cap.max_request_tokens
@@ -709,22 +713,43 @@ class WalletAgent:
         action_taken = ev.action_taken
 
         if ev.proceed:
-            try:
-                result = await port_call()
-            except Exception as exc:  # noqa: BLE001 — lineage emitted before re-raise
-                # R-SEC: record only the exception TYPE, never its message, so a
-                # misbehaving adapter cannot leak secret material via the record.
-                action_taken = f"HALT_WALLET_ERROR:{type(exc).__name__}"
-                await self._emit(
-                    ctx,
-                    ev,
-                    action_taken,
-                    executed=False,
-                    reasoning=f"WalletPort raised {type(exc).__name__}; action not completed.",
+            # Reserve-before-dispatch (S6.3): claim the per-window budget in one
+            # atomic check-and-debit BEFORE the await, closing the check-then-debit
+            # TOCTOU. A lost race (concurrent actions already drained the window)
+            # is a cost-cap BREACH — same disposition as the pre-flight cap gate,
+            # no port call, exactly one record (falls through to the emit below).
+            if self._window.try_reserve(ctx.request_cost, self._mask.cost_cap):
+                try:
+                    result = await port_call()
+                except Exception as exc:  # noqa: BLE001 — lineage emitted before re-raise
+                    # Release the reservation: a halted action consumes no budget.
+                    self._window.release(ctx.request_cost)
+                    # R-SEC: record only the exception TYPE, never its message, so a
+                    # misbehaving adapter cannot leak secret material via the record.
+                    action_taken = f"HALT_WALLET_ERROR:{type(exc).__name__}"
+                    await self._emit(
+                        ctx,
+                        ev,
+                        action_taken,
+                        executed=False,
+                        reasoning=f"WalletPort raised {type(exc).__name__}; action not completed.",
+                    )
+                    raise
+                executed = True
+                # Budget already claimed by try_reserve; the executed action keeps it.
+            else:
+                ev = _Evaluation(
+                    ConfirmationDecision.BLOCK,
+                    False,
+                    "HALT_COST_CAP_BREACH",
+                    "Cost-cap breach (per-window budget exhausted under concurrency); "
+                    "action refused (ADR-047).",
+                    ev.policies,
+                    ComplianceResult.NA,
+                    BudgetBreach.BREACH,
+                    halt_reason="cost_cap_breach",
                 )
-                raise
-            executed = True
-            self._window.add(ctx.request_cost)
+                action_taken = ev.action_taken
 
         record = await self._emit(
             ctx,

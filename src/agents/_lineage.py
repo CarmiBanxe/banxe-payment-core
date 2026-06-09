@@ -110,7 +110,16 @@ class CostWindow:
     ``threading.Lock`` so no update is lost — a lost update would under-count usage
     and let the per-window cap be silently bypassed (ADR-047). ``add`` stays
     synchronous so the agent call sites are unchanged; the lock is uncontended for
-    a single action, so single-action behaviour is preserved exactly."""
+    a single action, so single-action behaviour is preserved exactly.
+
+    Reserve-before-dispatch (S6.3): the agents previously *checked* the per-window
+    cap in ``_evaluate`` and only *debited* (``add``) after the ``await`` to the
+    port — a check-then-debit TOCTOU. Under concurrent same-window intents several
+    actions could each pass the cap check before any debited, transiently exceeding
+    the ADR-047 per-window cap. :meth:`try_reserve` closes that window by doing the
+    per-window cap check AND the debit in one locked critical section; :meth:`release`
+    returns a reservation whose action halts before it executes — so only a
+    genuinely-executed action keeps its budget."""
 
     used_tokens: int = 0
     used_cost: Decimal = Decimal("0")
@@ -128,6 +137,41 @@ class CostWindow:
         with self._lock:
             self.used_tokens += cost.tokens
             self.used_cost += cost.cost
+
+    def try_reserve(self, cost: RequestCost, cap: CostCap) -> bool:
+        """Atomically check the per-window cap AND debit in one critical section.
+
+        Closes the check-then-debit TOCTOU (S6.3): the per-window cap test and the
+        accumulate happen under the *same* lock acquisition, so under concurrent
+        live intents no two actions can both pass the cap and then both debit past
+        it. Returns ``True`` and debits when the action fits within *both* window
+        dimensions (token AND Decimal cost); returns ``False`` and debits nothing
+        when it would breach either. Call BEFORE dispatching the action; on a later
+        halt before execution, undo with :meth:`release`.
+
+        The per-request cap is a stateless pure check (it depends only on the single
+        request, never on accumulated state) and deliberately stays in the agent's
+        ``_evaluate`` — it needs no reservation."""
+        with self._lock:
+            if (
+                self.used_tokens + cost.tokens > cap.max_window_tokens
+                or self.used_cost + cost.cost > cap.max_window_cost
+            ):
+                return False
+            self.used_tokens += cost.tokens
+            self.used_cost += cost.cost
+            return True
+
+    def release(self, cost: RequestCost) -> None:
+        """Atomically return a prior :meth:`try_reserve` to the window (S6.3).
+
+        Called when a reserved action HALTS or ERRORS before it actually executes
+        (e.g. the port raises): the reservation is undone so a failed action does
+        not permanently consume budget. Only a genuinely-executed action keeps its
+        reservation. Symmetric with :meth:`try_reserve` under the same lock."""
+        with self._lock:
+            self.used_tokens -= cost.tokens
+            self.used_cost -= cost.cost
 
 
 # ---------------------------------------------------------------------------
