@@ -45,6 +45,8 @@ from src.agents._lineage import (
     CostCap,
     CostWindow,
     DecisionRecorder,
+    IdempotencyStorePort,
+    InMemoryIdempotencyStore,
     ProcessRef,
     RequestCost,
 )
@@ -173,12 +175,17 @@ class PaymentsAgent:
         recorder: DecisionRecorder,
         mask: PaymentsMask,
         cost_window: CostWindow | None = None,
+        idempotency_store: IdempotencyStorePort | None = None,
     ) -> None:
         self._wallet = wallet_port
         self._partner = partner_port
         self._recorder = recorder
         self._mask = mask
         self._window = cost_window or CostWindow(window_ref=f"{mask.agent_id}:default")
+        # Idempotent replay protection for money movement (S5.3): a retried or
+        # double-submitted intent carrying an already-executed idempotency_key is
+        # suppressed, never paid twice. Injected; defaults to an in-process store.
+        self._idempotency = idempotency_store or InMemoryIdempotencyStore()
 
     # -- public mask actions -------------------------------------------------
 
@@ -195,12 +202,13 @@ class PaymentsAgent:
         step-up regardless of confidence band (ADR-049 §D4).
         """
         amount = Decimal(intent.instruction.amount)
+        key = intent.instruction.idempotency_key
         ctx = _ActionContext(
             intent_text=intent.intent_text,
             process_ref=intent.process_ref,
             correlation_id=intent.correlation_id,
             confidence_score=intent.confidence_score,
-            triggering_event=f"payment_intent:{intent.instruction.idempotency_key}",
+            triggering_event=f"payment_intent:{key}",
             success_action="APPROVE_PAYMENT",
             request_cost=intent.request_cost,
             compliance_result=compliance_result,
@@ -209,9 +217,19 @@ class PaymentsAgent:
             biometric_verified=intent.biometric_verified,
             human_reviewed_by=human_reviewed_by,
         )
-        return await self._run_action(
+        # Idempotent replay protection (S5.3): an idempotency_key already executed
+        # to completion is suppressed — returned with the prior result, never paid
+        # again. Checked before dispatch so no second money movement is attempted.
+        if await self._idempotency.has_seen(key):
+            return await self._suppress_duplicate(ctx, key)
+        outcome = await self._run_action(
             ctx, lambda: self._partner.initiate_payment(intent.instruction)
         )
+        # Mark the key only after a successful execution: a halted/failed payment
+        # never marks, so a legitimate retry of an unfinished payment still runs.
+        if outcome.executed:
+            await self._idempotency.mark_seen(key, outcome.result)
+        return outcome
 
     async def validate_address(
         self,
@@ -369,6 +387,42 @@ class PaymentsAgent:
             BudgetBreach.NONE,
         )
 
+    async def _suppress_duplicate(self, ctx: _ActionContext, key: str) -> AgentOutcome:
+        """Handle an idempotent replay: emit exactly one auditable
+        ``DUPLICATE_SUPPRESSED`` lineage record and return the prior result without
+        re-executing or moving funds (S5.3). No budget is consumed (the window is
+        untouched) and no compliance gate is re-run — the original action already
+        passed every gate when it executed."""
+        prior = await self._idempotency.prior_result(key)
+        ev = _Evaluation(
+            decision=ConfirmationDecision.AUTO,
+            proceed=False,
+            action_taken="DUPLICATE_SUPPRESSED",
+            reasoning_summary=(
+                "Idempotent replay: idempotency_key already executed; re-execution "
+                "suppressed (no double-payment), prior result returned (ADR-046)."
+            ),
+            policies=["ADR-046-idempotent-replay-protection"],
+            compliance_result=ComplianceResult.NA,
+            budget_breach=BudgetBreach.NONE,
+            halt_reason="duplicate_suppressed",
+        )
+        record = await self._emit(
+            ctx,
+            ev,
+            ev.action_taken,
+            executed=False,
+            compliance_result=ComplianceResult.NA,
+            reasoning=ev.reasoning_summary,
+        )
+        return AgentOutcome(
+            decision=ev.decision,
+            executed=False,
+            record=record,
+            result=prior,
+            halt_reason=ev.halt_reason,
+        )
+
     async def _run_action(
         self, ctx: _ActionContext, port_call: Callable[[], Awaitable[object]]
     ) -> AgentOutcome:
@@ -457,6 +511,8 @@ __all__ = [
     "CostCap",
     "CostWindow",
     "DecisionRecorder",
+    "IdempotencyStorePort",
+    "InMemoryIdempotencyStore",
     "PaymentIntent",
     "PaymentsAgent",
     "PaymentsMask",

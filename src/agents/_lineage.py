@@ -25,10 +25,12 @@ caller, never recorded.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
+from threading import Lock
+from typing import Protocol
 
 # ---------------------------------------------------------------------------
 # Shared mask vocabulary (ADR-046 / ADR-047 / ADR-049 §D4)
@@ -100,15 +102,32 @@ class CostWindow:
     """Rolling per-window usage accumulator (ADR-047 §D2 per-window budget).
 
     ``window_ref`` defaults to a generic label; each agent overrides it with its
-    own ``f"{mask.agent_id}:default"`` at construction (behaviour unchanged)."""
+    own ``f"{mask.agent_id}:default"`` at construction (behaviour unchanged).
+
+    Concurrency (S5.3): once the S5.1 L1 router dispatches concurrent live intents,
+    one agent+window is shared across actions that execute at the same time. The
+    accumulator's read-modify-write (``used += cost``) is therefore guarded by a
+    ``threading.Lock`` so no update is lost — a lost update would under-count usage
+    and let the per-window cap be silently bypassed (ADR-047). ``add`` stays
+    synchronous so the agent call sites are unchanged; the lock is uncontended for
+    a single action, so single-action behaviour is preserved exactly."""
 
     used_tokens: int = 0
     used_cost: Decimal = Decimal("0")
     window_ref: str = "agent:default"
+    # Guards the accumulate below. Excluded from repr/eq: a lock has no value
+    # identity and never participates in window equality or display.
+    _lock: Lock = field(default_factory=Lock, repr=False, compare=False)
 
     def add(self, cost: RequestCost) -> None:
-        self.used_tokens += cost.tokens
-        self.used_cost += cost.cost
+        """Atomically fold one request's cost into the running window totals.
+
+        The whole read-modify-write is one critical section: under concurrent
+        execution the lock serialises it so ``used_tokens``/``used_cost`` always
+        equal the exact sum of every action's cost (no lost updates)."""
+        with self._lock:
+            self.used_tokens += cost.tokens
+            self.used_cost += cost.cost
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +199,63 @@ class DecisionRecorder(ABC):
         is considered complete (ADR-046 §D4 producer obligation)."""
 
 
+# ---------------------------------------------------------------------------
+# Idempotent replay protection (ADR-046 / ADR-021) — money-movement seam
+# ---------------------------------------------------------------------------
+
+
+class IdempotencyStorePort(Protocol):
+    """Replay-protection seam for money-movement actions (S5.3, DOUBLE-PAYMENT class).
+
+    A money-movement agent records each ``idempotency_key`` it has *successfully*
+    executed; a later replay of the same key is suppressed instead of re-executed,
+    so a retried/double-submitted intent cannot move funds twice. Injected as an
+    interface: the :class:`InMemoryIdempotencyStore` below is the single-process /
+    test default; a distributed deployment wires a durable shared store (e.g. Redis)
+    at the composition root.
+
+    R-SEC: this port caches only the money-movement *result reference* (an opaque
+    partner transaction handle), never key material. The secret-bearing Wallet
+    contour does not use this port; payment confirmations are not secrets (ADR-021).
+    """
+
+    async def has_seen(self, key: str) -> bool:  # pragma: no cover - protocol stub
+        """True if ``key`` was already executed to completion (a replay)."""
+        ...
+
+    async def mark_seen(self, key: str, result_ref: object) -> None:  # pragma: no cover
+        """Record ``key`` as executed, keeping ``result_ref`` for replay returns.
+
+        Called ONLY after a successful execution: a halted/failed action never
+        marks its key, so a legitimate retry of an unfinished payment still runs."""
+        ...
+
+    async def prior_result(self, key: str) -> object | None:  # pragma: no cover
+        """Return the result reference recorded for ``key``, or ``None`` if unseen."""
+        ...
+
+
+class InMemoryIdempotencyStore:
+    """Default in-process :class:`IdempotencyStorePort` (single-process / tests).
+
+    Maps an ``idempotency_key`` to the prior action's result reference so a replay
+    returns it without re-executing. Each individual dict operation is atomic under
+    the GIL; a distributed deployment swaps in a shared durable store at the
+    composition root without touching the agent."""
+
+    def __init__(self) -> None:
+        self._seen: dict[str, object] = {}
+
+    async def has_seen(self, key: str) -> bool:
+        return key in self._seen
+
+    async def mark_seen(self, key: str, result_ref: object) -> None:
+        self._seen[key] = result_ref
+
+    async def prior_result(self, key: str) -> object | None:
+        return self._seen.get(key)
+
+
 __all__ = [
     "AgentDecisionRecord",
     "AgentOutcome",
@@ -189,6 +265,8 @@ __all__ = [
     "CostCap",
     "CostWindow",
     "DecisionRecorder",
+    "IdempotencyStorePort",
+    "InMemoryIdempotencyStore",
     "ProcessRef",
     "RequestCost",
 ]
